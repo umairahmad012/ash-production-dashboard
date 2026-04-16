@@ -2603,6 +2603,76 @@ table.data--wide td:nth-child(6) { /* Property Address stays wrappable */
 }
 
 /* ==========================================================================
+   Master filter (Dashboard year scope)
+   ========================================================================== */
+
+.master-filter {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 24px;
+  padding: 18px 26px;
+  background: linear-gradient(180deg, #fff 0%, var(--cream) 100%);
+  border: 1px solid var(--line-gold);
+  border-radius: 4px;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+}
+.master-filter__label {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.master-filter__labelEyebrow {
+  font-family: var(--sans);
+  font-size: 10px;
+  letter-spacing: 2.5px;
+  text-transform: uppercase;
+  color: var(--rich-gold);
+  font-weight: 600;
+  flex-shrink: 0;
+}
+.master-filter__labelValue {
+  font-family: var(--serif);
+  font-size: 28px;
+  color: var(--forest-deep);
+  font-weight: 400;
+  line-height: 1;
+  letter-spacing: -0.5px;
+  flex-shrink: 0;
+}
+.master-filter__labelMeta {
+  font-family: var(--sans);
+  font-size: 12px;
+  color: var(--grey);
+  letter-spacing: 0.5px;
+  margin-left: 6px;
+  font-variant-numeric: tabular-nums;
+}
+.master-filter__chips {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  flex: 0 0 auto;
+}
+.master-filter__chips .year-chip {
+  padding: 8px 16px;
+  font-size: 11px;
+  letter-spacing: 1.5px;
+}
+
+@media (max-width: 720px) {
+  .master-filter {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+  .master-filter__labelValue { font-size: 22px; }
+}
+
+/* ==========================================================================
    Duplicate deals panel (Data & Backup page)
    ========================================================================== */
 

@@ -163,20 +163,45 @@ const CHART_FONT = { family: 'Montserrat', size: 11, weight: '400' };
    Dashboard
    ======================================================================== */
 
-Views.dashboard = function() {
-  const o = Store.getOverview();
-  const agents = Store.getAgents();
+Views.dashboard = function(query = {}) {
+  const years = Store.getYearsInData();
+  const thisYear = new Date().getFullYear();
+  // Default: current calendar year if it has data, else latest available, else current year
+  const defaultYear = years.includes(thisYear) ? thisYear : (years[years.length - 1] || thisYear);
+
+  // 'all' = no filter; otherwise a numeric year string
+  const rawScope = query.year || String(defaultYear);
+  const scopeYear = rawScope === 'all' ? null : Number(rawScope);
+  const scopeLabel = scopeYear == null ? 'All Time' : String(scopeYear);
+
+  const o = Store.getOverview(scopeYear);
+  const agents = scopeYear == null ? Store.getAgents() : Store.getAgentsForYear(scopeYear);
   const topByRevenue = agents.filter(a => a.revenue > 0).sort((a, b) => b.revenue - a.revenue).slice(0, 8);
   const topByDeals = agents.filter(a => a.dealCount > 0).sort((a, b) => b.dealCount - a.dealCount).slice(0, 8);
 
-  const years = Store.getYearsInData();
-  const currentYear = years[years.length - 1] || new Date().getFullYear();
-  const monthly = Store.getMonthlyProduction(currentYear);
+  // Chart year: if filter is All Time, default the chart to most recent year with data
+  const chartYear = scopeYear != null ? scopeYear : (years[years.length - 1] || thisYear);
 
   const recentDeals = Store.getDeals()
-    .filter(d => d.disbursementDate)
+    .filter(d => {
+      if (!d.disbursementDate) return false;
+      if (scopeYear == null) return true;
+      return new Date(d.disbursementDate).getFullYear() === scopeYear;
+    })
     .sort((a, b) => b.disbursementDate.localeCompare(a.disbursementDate))
     .slice(0, 6);
+
+  // Build year chips — "All Time" first, then every year with data (newest first)
+  const yearOptions = ['all', ...years.slice().sort((a, b) => b - a).map(String)];
+  // Ensure current year is selectable even when no deals yet
+  if (!years.includes(thisYear)) {
+    yearOptions.splice(1, 0, String(thisYear));
+  }
+  const yearChipsHTML = yearOptions.map(y => {
+    const active = String(rawScope) === y;
+    const label = y === 'all' ? 'All Time' : y;
+    return `<button type="button" class="year-chip ${active ? 'is-active' : ''}" data-scope-year="${y}">${label}</button>`;
+  }).join('');
 
   return `
     <section class="view">
@@ -191,21 +216,30 @@ Views.dashboard = function() {
         </div>
       </header>
 
+      <div class="master-filter" data-animate="hero">
+        <div class="master-filter__label">
+          <span class="master-filter__labelEyebrow">Viewing</span>
+          <span class="master-filter__labelValue">${scopeLabel}</span>
+          <span class="master-filter__labelMeta">${o.totalDeals} deal${o.totalDeals === 1 ? '' : 's'} · ${fmtMoney(o.totalRevenue, { decimals: 0 })}</span>
+        </div>
+        <div class="master-filter__chips">${yearChipsHTML}</div>
+      </div>
+
       <div class="kpi-grid">
         <div class="kpi">
-          <div class="kpi__label">Total Revenue</div>
+          <div class="kpi__label">${scopeLabel} Revenue</div>
           <div class="kpi__value">${fmtMoney(o.totalRevenue, { decimals: 0 })}</div>
-          <div class="kpi__delta">Across <strong>${fmtNumber(o.totalDeals)}</strong> deals</div>
+          <div class="kpi__delta">Across <strong>${fmtNumber(o.totalDeals)}</strong> deal${o.totalDeals === 1 ? '' : 's'}</div>
         </div>
         <div class="kpi">
-          <div class="kpi__label">Total Deals</div>
+          <div class="kpi__label">${scopeLabel} Deals</div>
           <div class="kpi__value">${fmtNumber(o.totalDeals)}</div>
           <div class="kpi__delta"><strong>${o.purchaseCt}</strong> purchase · <strong>${o.refinanceCt}</strong> refi · <strong>${o.subordinateCt}</strong> sub</div>
         </div>
         <div class="kpi">
           <div class="kpi__label">Active Realtors</div>
           <div class="kpi__value">${fmtNumber(o.activeClients)}</div>
-          <div class="kpi__delta">of <strong>${fmtNumber(o.totalAgents)}</strong> in the database</div>
+          <div class="kpi__delta">${scopeYear == null ? `of <strong>${fmtNumber(o.totalAgents)}</strong> in the database` : `with ≥1 deal in ${scopeLabel}`}</div>
         </div>
         <div class="kpi" title="Attributed revenue (${fmtMoney(o.attributedRevenue, { decimals: 0 })}) ÷ client expenses (${fmtMoney(o.totalExpenses, { decimals: 0 })}). Direct business is excluded to pair apples-to-apples with client spend.">
           <div class="kpi__label">Client ROI</div>
@@ -219,9 +253,8 @@ Views.dashboard = function() {
           <div class="panel__head">
             <div>
               <h3 class="panel__title">${icon('monthly', 16)} Monthly Revenue</h3>
-              <div class="panel__subtitle" id="monthlySubtitle">${currentYear} Production</div>
+              <div class="panel__subtitle" id="monthlySubtitle">${chartYear} Production</div>
             </div>
-            <div>${years.length > 1 ? `<select class="field__select" id="yearSelect">${years.map(y => `<option value="${y}" ${y === currentYear ? 'selected' : ''}>${y}</option>`).join('')}</select>` : ''}</div>
           </div>
           <div class="panel__body">
             <div class="chart-wrap"><canvas id="monthlyRevenueChart"></canvas></div>
@@ -331,19 +364,29 @@ Views.dashboard = function() {
   `;
 };
 
-Views.dashboardPost = function() {
-  const o = Store.getOverview();
+Views.dashboardPost = function(query = {}) {
   const years = Store.getYearsInData();
-  const currentYear = years[years.length - 1] || new Date().getFullYear();
+  const thisYear = new Date().getFullYear();
+  const defaultYear = years.includes(thisYear) ? thisYear : (years[years.length - 1] || thisYear);
+  const rawScope = query.year || String(defaultYear);
+  const scopeYear = rawScope === 'all' ? null : Number(rawScope);
+  const chartYear = scopeYear != null ? scopeYear : (years[years.length - 1] || thisYear);
 
-  buildMonthlyChart(currentYear);
+  // Overview for scoped metrics (tx mix chart pulls from here)
+  const o = Store.getOverview(scopeYear);
+
+  buildMonthlyChart(chartYear);
   buildTxMixChart(o);
 
-  document.getElementById('yearSelect')?.addEventListener('change', e => {
-    const y = Number(e.target.value);
-    buildMonthlyChart(y);
-    const sub = document.getElementById('monthlySubtitle');
-    if (sub) sub.textContent = `${y} Production`;
+  // Animate master filter in
+  Animate.heroIn('[data-animate="hero"]');
+
+  // Wire year chip clicks — drive route query to re-render everything
+  document.querySelectorAll('[data-scope-year]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const y = btn.getAttribute('data-scope-year');
+      App.navigate('dashboard', y === String(defaultYear) ? {} : { year: y });
+    });
   });
 
   document.querySelectorAll('.lb-row').forEach(row => {

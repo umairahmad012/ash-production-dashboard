@@ -324,6 +324,107 @@ const Store = {
     return this.getAgents().find(a => a.name === name);
   },
 
+  // Agents aggregated from deals in a specific year only. Used for the dashboard
+  // leaderboards when a year filter is active. Structure matches getAgents().
+  getAgentsForYear(year) {
+    if (year == null) return this.getAgents();
+    const byName = new Map();
+    const ensure = (name) => {
+      if (!name || !name.trim()) return null;
+      const key = name.trim();
+      if (!byName.has(key)) {
+        byName.set(key, {
+          name: key,
+          isListing: false,
+          isSelling: false,
+          dealCount: 0,
+          revenue: 0,
+          purchase: 0,
+          refinance: 0,
+          subordinate: 0,
+          firstDeal: null,
+          lastDeal: null,
+          expenses: 0
+        });
+      }
+      return byName.get(key);
+    };
+
+    const yearDeals = this.state.deals.filter(d => {
+      if (!d.disbursementDate) return false;
+      const dt = new Date(d.disbursementDate);
+      return !isNaN(dt) && dt.getFullYear() === Number(year);
+    });
+
+    for (const d of yearDeals) {
+      if (d.listingAgent) ensure(d.listingAgent).isListing = true;
+      if (d.sellingAgent) ensure(d.sellingAgent).isSelling = true;
+
+      const attr = d.clientAttribution || computeClientSource(d);
+      const listing = (d.listingAgent || '').trim();
+      const selling = (d.sellingAgent || '').trim();
+      const rev = Number(d.revenue || 0);
+
+      if (attr === 'Both' && listing && selling && listing.toLowerCase() !== selling.toLowerCase()) {
+        [listing, selling].forEach(name => {
+          const a = ensure(name);
+          if (!a) return;
+          a.dealCount += 1;
+          a.revenue += rev / 2;
+          if (d.transactionType === 'Purchase') a.purchase += 1;
+          else if (d.transactionType === 'Refinance') a.refinance += 1;
+          else if (d.transactionType === 'Subordinate Order') a.subordinate += 1;
+          if (d.disbursementDate) {
+            const t = d.disbursementDate;
+            if (!a.firstDeal || t < a.firstDeal) a.firstDeal = t;
+            if (!a.lastDeal || t > a.lastDeal) a.lastDeal = t;
+          }
+        });
+      } else {
+        const cli = ensure(d.client);
+        if (cli) {
+          cli.dealCount += 1;
+          cli.revenue += rev;
+          if (d.transactionType === 'Purchase') cli.purchase += 1;
+          else if (d.transactionType === 'Refinance') cli.refinance += 1;
+          else if (d.transactionType === 'Subordinate Order') cli.subordinate += 1;
+          if (d.disbursementDate) {
+            const t = d.disbursementDate;
+            if (!cli.firstDeal || t < cli.firstDeal) cli.firstDeal = t;
+            if (!cli.lastDeal || t > cli.lastDeal) cli.lastDeal = t;
+          }
+          if (d.listingAgent === d.client) cli.isListing = true;
+          if (d.sellingAgent === d.client) cli.isSelling = true;
+        }
+      }
+    }
+
+    // Expenses in the year bucketed by client
+    for (const e of this.state.expenses) {
+      if (!e.date) continue;
+      const dt = new Date(e.date);
+      if (isNaN(dt) || dt.getFullYear() !== Number(year)) continue;
+      const c = ensure(e.client);
+      if (c) c.expenses += Number(e.amount || 0);
+    }
+
+    const agents = [];
+    for (const a of byName.values()) {
+      a.revenue = round2(a.revenue);
+      a.expenses = round2(a.expenses);
+      a.costPerDeal = a.dealCount > 0 ? round2(a.expenses / a.dealCount) : 0;
+      a.roi = a.expenses > 0 ? round2(a.revenue / a.expenses) : (a.revenue > 0 ? 999 : 0);
+      a.avgRevenue = a.dealCount > 0 ? round2(a.revenue / a.dealCount) : 0;
+      if (a.isListing && a.isSelling) a.clientType = 'Both';
+      else if (a.isListing) a.clientType = 'Listing Agent';
+      else if (a.isSelling) a.clientType = 'Selling Agent';
+      else a.clientType = '—';
+      a.isActive = a.dealCount > 0;
+      agents.push(a);
+    }
+    return agents;
+  },
+
   getDealsForAgent(name) {
     return this.state.deals.filter(d =>
       d.client === name || d.listingAgent === name || d.sellingAgent === name
@@ -486,10 +587,27 @@ const Store = {
 
   /* ---------- Aggregates ---------- */
 
-  getOverview() {
-    const deals = this.state.deals;
-    const expenses = this.state.expenses;
-    const agents = this.getAgents();
+  /**
+   * Returns an overview optionally filtered to a single calendar year.
+   * Pass null/undefined for all-time.
+   * When a year is given:
+   *  - totalDeals, totalRevenue, attributedRevenue, directRevenue, purchaseCt, etc.
+   *    reflect only deals with disbursementDate in that year
+   *  - totalExpenses reflects only expenses with date in that year
+   *  - activeClients = distinct credited-client realtors in that year
+   *  - totalAgents = all-time agent database size (for context)
+   */
+  getOverview(year = null) {
+    const inYear = (dateStr) => {
+      if (year == null) return true;
+      if (!dateStr) return false;
+      const dt = new Date(dateStr);
+      return !isNaN(dt) && dt.getFullYear() === Number(year);
+    };
+
+    const deals    = this.state.deals.filter(d => inYear(d.disbursementDate));
+    const expenses = this.state.expenses.filter(e => inYear(e.date));
+    const allAgents = this.getAgents();
 
     const totalRevenue = round2(deals.reduce((s, d) => s + Number(d.revenue || 0), 0));
     const totalExpenses = round2(expenses.reduce((s, e) => s + Number(e.amount || 0), 0));
@@ -513,15 +631,27 @@ const Store = {
       sourceCounts[src] = (sourceCounts[src] || 0) + 1;
     }
 
+    // Active clients in the (filtered) period: distinct credited-client realtors.
+    // When a year is given, "active" = they had ≥ 1 deal in that year.
+    const activeClientNames = new Set();
+    for (const d of deals) {
+      if (d.client && d.client.trim()) activeClientNames.add(d.client.trim().toLowerCase());
+      if ((d.clientAttribution || '') === 'Both') {
+        if (d.listingAgent) activeClientNames.add(d.listingAgent.trim().toLowerCase());
+        if (d.sellingAgent) activeClientNames.add(d.sellingAgent.trim().toLowerCase());
+      }
+    }
+
     return {
+      year,
       totalDeals: deals.length,
       totalRevenue,
       attributedRevenue,
       directRevenue,
       totalExpenses,
       overallRoi: totalExpenses > 0 ? round2(attributedRevenue / totalExpenses) : null,
-      activeClients: agents.filter(a => a.isActive).length,
-      totalAgents: agents.length,
+      activeClients: activeClientNames.size,
+      totalAgents: allAgents.length,
       avgDealSize: deals.length > 0 ? round2(totalRevenue / deals.length) : 0,
       purchaseCt,
       refinanceCt,

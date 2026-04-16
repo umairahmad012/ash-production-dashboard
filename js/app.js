@@ -260,8 +260,9 @@ const App = {
 
     switch (route) {
       case 'dashboard':
-        html = Views.dashboard();
+        html = Views.dashboard(params);
         postFn = Views.dashboardPost;
+        postArg = params;
         break;
       case 'deals':
         html = Views.deals(params);
@@ -303,8 +304,9 @@ const App = {
         postFn = Views.dataPost;
         break;
       default:
-        html = Views.dashboard();
+        html = Views.dashboard(params);
         postFn = Views.dashboardPost;
+        postArg = params;
     }
 
     main.innerHTML = html;
