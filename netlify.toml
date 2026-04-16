@@ -16,16 +16,16 @@
 [build.processing.html]
   pretty_urls = true
 
-# Long-cache for fingerprint-able assets if added later
+# Short cache so deploys propagate quickly. Bump ?v= in index.html to force-bust if needed.
 [[headers]]
   for = "/css/*"
   [headers.values]
-    Cache-Control = "public, max-age=3600"
+    Cache-Control = "public, max-age=60, must-revalidate"
 
 [[headers]]
   for = "/js/*"
   [headers.values]
-    Cache-Control = "public, max-age=3600"
+    Cache-Control = "public, max-age=60, must-revalidate"
 
 # Basic security headers for a browser-only app
 [[headers]]
