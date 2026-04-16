@@ -2603,73 +2603,106 @@ table.data--wide td:nth-child(6) { /* Property Address stays wrappable */
 }
 
 /* ==========================================================================
-   Master filter (Dashboard year scope)
+   Master filter (Dashboard year picker)
    ========================================================================== */
 
 .master-filter {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  gap: 24px;
-  padding: 18px 26px;
+  justify-content: space-between;
+  gap: 32px;
+  padding: 20px 28px;
   background: linear-gradient(180deg, #fff 0%, var(--cream) 100%);
   border: 1px solid var(--line-gold);
   border-radius: 4px;
-  margin-bottom: 20px;
+  margin-bottom: 24px;
   flex-wrap: wrap;
 }
-.master-filter__label {
+.master-filter__pickerLabel {
   display: flex;
-  align-items: baseline;
-  gap: 14px;
-  flex: 1 1 auto;
-  min-width: 0;
+  flex-direction: column;
+  gap: 8px;
+  flex: 0 0 auto;
+  cursor: pointer;
 }
-.master-filter__labelEyebrow {
+.master-filter__eyebrow {
   font-family: var(--sans);
   font-size: 10px;
   letter-spacing: 2.5px;
   text-transform: uppercase;
   color: var(--rich-gold);
   font-weight: 600;
-  flex-shrink: 0;
 }
-.master-filter__labelValue {
+.master-filter__picker {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  min-width: 200px;
+}
+.master-filter__select {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 100%;
+  padding: 12px 40px 12px 18px;
   font-family: var(--serif);
-  font-size: 28px;
+  font-size: 22px;
+  font-weight: 400;
+  color: var(--forest-deep);
+  background: #fff;
+  border: 1px solid var(--line-gold);
+  border-radius: 3px;
+  cursor: pointer;
+  letter-spacing: -0.3px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  line-height: 1.1;
+}
+.master-filter__select:hover,
+.master-filter__select:focus {
+  border-color: var(--rich-gold);
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(201, 168, 76, 0.15);
+}
+.master-filter__caret {
+  position: absolute;
+  right: 16px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--rich-gold);
+  font-size: 14px;
+  pointer-events: none;
+}
+.master-filter__summary {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+.master-filter__summaryScope {
+  font-family: var(--sans);
+  font-size: 10px;
+  letter-spacing: 2.5px;
+  text-transform: uppercase;
+  color: var(--grey);
+  font-weight: 600;
+}
+.master-filter__summaryMeta {
+  font-family: var(--serif);
+  font-size: 18px;
   color: var(--forest-deep);
   font-weight: 400;
-  line-height: 1;
-  letter-spacing: -0.5px;
-  flex-shrink: 0;
-}
-.master-filter__labelMeta {
-  font-family: var(--sans);
-  font-size: 12px;
-  color: var(--grey);
-  letter-spacing: 0.5px;
-  margin-left: 6px;
   font-variant-numeric: tabular-nums;
-}
-.master-filter__chips {
-  display: flex;
-  gap: 4px;
-  flex-wrap: wrap;
-  flex: 0 0 auto;
-}
-.master-filter__chips .year-chip {
-  padding: 8px 16px;
-  font-size: 11px;
-  letter-spacing: 1.5px;
+  letter-spacing: -0.3px;
 }
 
 @media (max-width: 720px) {
   .master-filter {
     flex-direction: column;
-    align-items: flex-start;
-    gap: 12px;
+    align-items: stretch;
+    gap: 14px;
   }
-  .master-filter__labelValue { font-size: 22px; }
+  .master-filter__picker { min-width: 100%; }
+  .master-filter__summary { margin-left: 0; }
 }
 
 /* ==========================================================================

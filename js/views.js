@@ -191,16 +191,15 @@ Views.dashboard = function(query = {}) {
     .sort((a, b) => b.disbursementDate.localeCompare(a.disbursementDate))
     .slice(0, 6);
 
-  // Build year chips — "All Time" first, then every year with data (newest first)
-  const yearOptions = ['all', ...years.slice().sort((a, b) => b - a).map(String)];
-  // Ensure current year is selectable even when no deals yet
-  if (!years.includes(thisYear)) {
-    yearOptions.splice(1, 0, String(thisYear));
-  }
-  const yearChipsHTML = yearOptions.map(y => {
-    const active = String(rawScope) === y;
+  // Build year options — current year first, then every year with data desc, then All Time
+  const yearSet = new Set(years.map(String));
+  yearSet.add(String(thisYear));  // always include current year even if no data
+  const orderedYears = Array.from(yearSet).map(Number).sort((a, b) => b - a).map(String);
+  const yearOptions = [...orderedYears, 'all'];
+  const yearOptionsHTML = yearOptions.map(y => {
     const label = y === 'all' ? 'All Time' : y;
-    return `<button type="button" class="year-chip ${active ? 'is-active' : ''}" data-scope-year="${y}">${label}</button>`;
+    const selected = String(rawScope) === y ? 'selected' : '';
+    return `<option value="${y}" ${selected}>${label}</option>`;
   }).join('');
 
   return `
@@ -217,12 +216,19 @@ Views.dashboard = function(query = {}) {
       </header>
 
       <div class="master-filter" data-animate="hero">
-        <div class="master-filter__label">
-          <span class="master-filter__labelEyebrow">Viewing</span>
-          <span class="master-filter__labelValue">${scopeLabel}</span>
-          <span class="master-filter__labelMeta">${o.totalDeals} deal${o.totalDeals === 1 ? '' : 's'} · ${fmtMoney(o.totalRevenue, { decimals: 0 })}</span>
+        <label class="master-filter__pickerLabel" for="dashYearSelect">
+          <span class="master-filter__eyebrow">Filter by Year</span>
+          <div class="master-filter__picker">
+            <select class="master-filter__select" id="dashYearSelect">
+              ${yearOptionsHTML}
+            </select>
+            <span class="master-filter__caret">▾</span>
+          </div>
+        </label>
+        <div class="master-filter__summary">
+          <span class="master-filter__summaryScope">${scopeLabel}</span>
+          <span class="master-filter__summaryMeta">${o.totalDeals} deal${o.totalDeals === 1 ? '' : 's'} · ${fmtMoney(o.totalRevenue, { decimals: 0 })}</span>
         </div>
-        <div class="master-filter__chips">${yearChipsHTML}</div>
       </div>
 
       <div class="kpi-grid">
@@ -381,12 +387,10 @@ Views.dashboardPost = function(query = {}) {
   // Animate master filter in
   Animate.heroIn('[data-animate="hero"]');
 
-  // Wire year chip clicks — drive route query to re-render everything
-  document.querySelectorAll('[data-scope-year]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const y = btn.getAttribute('data-scope-year');
-      App.navigate('dashboard', y === String(defaultYear) ? {} : { year: y });
-    });
+  // Wire year dropdown — drive route query to re-render everything
+  document.getElementById('dashYearSelect')?.addEventListener('change', (e) => {
+    const y = e.target.value;
+    App.navigate('dashboard', y === String(defaultYear) ? {} : { year: y });
   });
 
   document.querySelectorAll('.lb-row').forEach(row => {
