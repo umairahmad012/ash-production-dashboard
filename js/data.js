@@ -1044,14 +1044,19 @@ function computePredictions(horizonMonths, monthlyStats) {
     deals: Math.round(deals6 * horizonMonths)
   };
 
-  // Expected: sum of trend values for next H months
+  // Expected: sum of trend values for next H months.
+  // Floor each month at Conservative's monthly rate (rev6 / deals6) so
+  // Expected can never undershoot Conservative. When the trend is upward,
+  // Expected rises above it; when the trend is flat or seasonally
+  // declining, Expected matches Conservative. This keeps the scenario
+  // ordering meaningful (C ≤ E ≤ O) for both KPI totals and the chart.
   const startIdx = recent12.length; // first forecast month index (continues from history)
   let expRevenue = 0, expDeals = 0;
   const expectedMonthly = [];
   for (let m = 0; m < horizonMonths; m++) {
     const idx = startIdx + m;
-    const rev = Math.max(0, trendRev.intercept + trendRev.slope * idx);
-    const dls = Math.max(0, trendDeals.intercept + trendDeals.slope * idx);
+    const rev = Math.max(rev6, trendRev.intercept + trendRev.slope * idx);
+    const dls = Math.max(deals6, trendDeals.intercept + trendDeals.slope * idx);
     expRevenue += rev;
     expDeals += dls;
     expectedMonthly.push(rev);
