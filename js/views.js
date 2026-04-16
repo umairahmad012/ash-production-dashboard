@@ -1,0 +1,3099 @@
+/* ==========================================================================
+   Views · renderers for each page
+   Each view returns HTML. Post-render hooks wire up charts & interactions.
+   ========================================================================== */
+
+const Views = {};
+const CHARTS = {}; // registered chart instances keyed by canvas id
+
+/* ---------------- Icon library ----------------
+   Minimal line-style SVG icons. Stroke currentColor so they inherit
+   the surrounding text color. Return string; embed with innerHTML. */
+
+const ICONS = {
+  dashboard: '<path d="M3 12h7V3H3v9Zm0 9h7v-6H3v6Zm11 0h7v-9h-7v9Zm0-18v6h7V3h-7Z"/>',
+  deals: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6Z"/><path d="M14 2v6h6"/><path d="M9 13h6M9 17h6M9 9h2"/>',
+  agents: '<circle cx="9" cy="7" r="3.5"/><path d="M2.5 21a6.5 6.5 0 0 1 13 0"/><circle cx="17" cy="9" r="2.5"/><path d="M15 21a5 5 0 0 1 7 0"/>',
+  expenses: '<path d="M12 2v20M18 6H9a3 3 0 0 0 0 6h6a3 3 0 0 1 0 6H6"/>',
+  monthly: '<rect x="3" y="4" width="18" height="17" rx="2"/><path d="M16 2v4M8 2v4M3 10h18M8 14h2M8 18h2M14 14h2M14 18h2"/>',
+  goals: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5.5"/><circle cx="12" cy="12" r="2" fill="currentColor"/><path d="M12 2v3M22 12h-3M12 22v-3M2 12h3"/>',
+  underwriters: '<path d="M12 2 4 5v6c0 5 3.5 9 8 11 4.5-2 8-6 8-11V5l-8-3Z"/><path d="m9 12 2 2 4-4"/>',
+  data: '<ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v6c0 1.66 4 3 9 3s9-1.34 9-3V5"/><path d="M3 11v6c0 1.66 4 3 9 3s9-1.34 9-3v-6"/>',
+  // Expense categories
+  marketing: '<path d="M3 11v2a1 1 0 0 0 1 1h3l6 4V6L7 10H4a1 1 0 0 0-1 1Z"/><path d="M17 8a5 5 0 0 1 0 8M20 5a9 9 0 0 1 0 14"/>',
+  gift: '<rect x="3" y="8" width="18" height="4"/><path d="M12 8v14"/><path d="M5 12v10h14V12"/><path d="M12 8c0-2-1-4-3-4s-3 1-3 2 1 2 3 2h3Zm0 0c0-2 1-4 3-4s3 1 3 2-1 2-3 2h-3Z"/>',
+  meal: '<path d="M7 2v10M4 2v4a3 3 0 0 0 3 3h0a3 3 0 0 0 3-3V2"/><path d="M7 12v10M17 22V13a4 4 0 0 1 4-4h-1a4 4 0 0 0-4 4v9Z"/>',
+  event: '<rect x="3" y="4" width="18" height="17" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/><circle cx="12" cy="15" r="2.5" fill="currentColor"/>',
+  sponsorship: '<circle cx="12" cy="9" r="6"/><path d="m8.5 14-2 7 5.5-3 5.5 3-2-7"/>',
+  referral: '<circle cx="12" cy="8" r="3.5"/><path d="M5 21a5 5 0 0 1 5-5h4a5 5 0 0 1 5 5"/><path d="m7 13 2 2 4-4"/>',
+  other: '<circle cx="5" cy="12" r="1.4" fill="currentColor"/><circle cx="12" cy="12" r="1.4" fill="currentColor"/><circle cx="19" cy="12" r="1.4" fill="currentColor"/>',
+  // Transaction types
+  purchase: '<path d="M3 10h18l-2 10H5L3 10Z"/><path d="M8 10V6a4 4 0 1 1 8 0v4"/>',
+  refinance: '<path d="M21 12a9 9 0 1 1-3-6.7M21 4v5h-5"/>',
+  subordinate: '<path d="M4 7h16M4 12h10M4 17h16"/>',
+  // Actions
+  upload: '<path d="M12 3v13M7 8l5-5 5 5M5 21h14"/>',
+  download: '<path d="M12 3v13M7 11l5 5 5-5M5 21h14"/>',
+  trash: '<path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M6 6l1 14a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-14M10 11v6M14 11v6"/>',
+  edit: '<path d="M11 4H5a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h13a2 2 0 0 0 2-2v-6"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5Z"/>',
+  close: '<path d="M18 6 6 18M6 6l12 12"/>',
+  check: '<path d="m5 12 5 5L20 7"/>',
+  settings: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3h0a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5h0a1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8v0a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1Z"/>',
+  search: '<circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/>'
+};
+
+function icon(name, size = 18) {
+  const body = ICONS[name];
+  if (!body) return '';
+  return `<svg class="icon" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
+}
+
+function expenseIconFor(t) {
+  const map = {
+    'Marketing': 'marketing', 'Gift': 'gift', 'Meal': 'meal',
+    'Event': 'event', 'Sponsorship': 'sponsorship',
+    'Referral Fee': 'referral', 'Other': 'other'
+  };
+  return map[t] || 'other';
+}
+
+function txIconFor(t) {
+  if (t === 'Purchase') return 'purchase';
+  if (t === 'Refinance') return 'refinance';
+  if (t === 'Subordinate Order') return 'subordinate';
+  return 'deals';
+}
+
+/* Common helpers */
+
+/**
+ * Render a sortable table header cell.
+ * @param {string} field    - key used for data-sort-field
+ * @param {string} label    - visible label
+ * @param {object} query    - current route query object ({ sort, dir })
+ * @param {string} cls      - extra th class (e.g., 'num', 'center')
+ */
+function sortableTH(field, label, query, cls = '') {
+  const active = query.sort === field;
+  const dir = active ? (query.dir || 'asc') : null;
+  const arrow = active
+    ? (dir === 'asc' ? '<span class="sort-arrow is-active">▲</span>' : '<span class="sort-arrow is-active">▼</span>')
+    : '<span class="sort-arrow">⇅</span>';
+  return `<th class="sortable ${active ? 'is-sorted' : ''} ${cls}" data-sort-field="${field}"><span class="th-label">${label}</span>${arrow}</th>`;
+}
+
+/**
+ * Sort an array of objects by a field getter.
+ * @param {Array}    items
+ * @param {Function} getter - (item) => comparable value
+ * @param {string}   dir    - 'asc' | 'desc'
+ */
+function sortItems(items, getter, dir = 'asc') {
+  const arr = items.slice();
+  arr.sort((a, b) => {
+    const av = getter(a);
+    const bv = getter(b);
+    const aNull = av === null || av === undefined || av === '';
+    const bNull = bv === null || bv === undefined || bv === '';
+    if (aNull && bNull) return 0;
+    if (aNull) return 1;   // empty values last
+    if (bNull) return -1;
+    if (typeof av === 'number' && typeof bv === 'number') {
+      return dir === 'asc' ? av - bv : bv - av;
+    }
+    const cmp = String(av).localeCompare(String(bv), undefined, { numeric: true, sensitivity: 'base' });
+    return dir === 'asc' ? cmp : -cmp;
+  });
+  return arr;
+}
+
+/**
+ * Wire up click handlers on sortable th elements.
+ * Clicks update the route query with sort+dir (toggles asc↔desc).
+ */
+function wireSortableHeaders(route, currentQuery) {
+  document.querySelectorAll('th[data-sort-field]').forEach(th => {
+    th.addEventListener('click', () => {
+      const field = th.getAttribute('data-sort-field');
+      const curSort = currentQuery.sort;
+      const curDir  = currentQuery.dir || 'asc';
+      const newDir  = (curSort === field && curDir === 'asc') ? 'desc' : 'asc';
+      App.navigate(route, { ...currentQuery, sort: field, dir: newDir });
+    });
+  });
+}
+
+function el(tag, attrs = {}, children = []) {
+  // lightweight helper — used sparingly
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === 'className') e.className = v;
+    else if (k.startsWith('on')) e.addEventListener(k.slice(2).toLowerCase(), v);
+    else e.setAttribute(k, v);
+  }
+  for (const c of children) e.append(c);
+  return e;
+}
+
+function destroyAllCharts() {
+  for (const id of Object.keys(CHARTS)) {
+    try { CHARTS[id].destroy(); } catch {}
+    delete CHARTS[id];
+  }
+}
+
+// Chart.js theme constants
+const CHART_COLORS = {
+  forestDeep: '#0F2922',
+  forestPrimary: '#1A3C34',
+  forestMid: '#2D5A4E',
+  forestLight: '#3D7A6B',
+  gold: '#C9A84C',
+  goldMid: '#D4AF37',
+  goldLight: '#E8C97A',
+  goldPale: '#F5E9C8',
+  cream: '#F8F4EF',
+  grey: '#6B6B6B',
+  line: 'rgba(26, 60, 52, 0.12)'
+};
+
+const CHART_FONT = { family: 'Montserrat', size: 11, weight: '400' };
+
+/* ========================================================================
+   Dashboard
+   ======================================================================== */
+
+Views.dashboard = function() {
+  const o = Store.getOverview();
+  const agents = Store.getAgents();
+  const topByRevenue = agents.filter(a => a.revenue > 0).sort((a, b) => b.revenue - a.revenue).slice(0, 8);
+  const topByDeals = agents.filter(a => a.dealCount > 0).sort((a, b) => b.dealCount - a.dealCount).slice(0, 8);
+
+  const years = Store.getYearsInData();
+  const currentYear = years[years.length - 1] || new Date().getFullYear();
+  const monthly = Store.getMonthlyProduction(currentYear);
+
+  const recentDeals = Store.getDeals()
+    .filter(d => d.disbursementDate)
+    .sort((a, b) => b.disbursementDate.localeCompare(a.disbursementDate))
+    .slice(0, 6);
+
+  return `
+    <section class="view">
+      <header class="view-header">
+        <div class="view-header__left">
+          <div class="eyebrow">Business Intelligence</div>
+          <h1>Welcome, <em>Ashraf Abusamak.</em></h1>
+        </div>
+        <div class="view-header__right">
+          <a href="#/deals" class="btn btn--ghost">View Deals</a>
+          <button class="btn btn--gold" data-action="open-deal-modal">+ Log New Deal</button>
+        </div>
+      </header>
+
+      <div class="kpi-grid">
+        <div class="kpi">
+          <div class="kpi__label">Total Revenue</div>
+          <div class="kpi__value">${fmtMoney(o.totalRevenue, { decimals: 0 })}</div>
+          <div class="kpi__delta">Across <strong>${fmtNumber(o.totalDeals)}</strong> deals</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi__label">Total Deals</div>
+          <div class="kpi__value">${fmtNumber(o.totalDeals)}</div>
+          <div class="kpi__delta"><strong>${o.purchaseCt}</strong> purchase · <strong>${o.refinanceCt}</strong> refi · <strong>${o.subordinateCt}</strong> sub</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi__label">Active Realtors</div>
+          <div class="kpi__value">${fmtNumber(o.activeClients)}</div>
+          <div class="kpi__delta">of <strong>${fmtNumber(o.totalAgents)}</strong> in the database</div>
+        </div>
+        <div class="kpi" title="Attributed revenue (${fmtMoney(o.attributedRevenue, { decimals: 0 })}) ÷ client expenses (${fmtMoney(o.totalExpenses, { decimals: 0 })}). Direct business is excluded to pair apples-to-apples with client spend.">
+          <div class="kpi__label">Client ROI</div>
+          <div class="kpi__value">${o.overallRoi !== null ? fmtRoi(o.overallRoi) : '—'}</div>
+          <div class="kpi__delta">${fmtMoney(o.attributedRevenue, { decimals: 0 })} attributed ÷ ${fmtMoney(o.totalExpenses, { decimals: 0 })} spend</div>
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <div class="panel">
+          <div class="panel__head">
+            <div>
+              <h3 class="panel__title">${icon('monthly', 16)} Monthly Revenue</h3>
+              <div class="panel__subtitle" id="monthlySubtitle">${currentYear} Production</div>
+            </div>
+            <div>${years.length > 1 ? `<select class="field__select" id="yearSelect">${years.map(y => `<option value="${y}" ${y === currentYear ? 'selected' : ''}>${y}</option>`).join('')}</select>` : ''}</div>
+          </div>
+          <div class="panel__body">
+            <div class="chart-wrap"><canvas id="monthlyRevenueChart"></canvas></div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel__head">
+            <div>
+              <h3 class="panel__title">${icon('deals', 16)} Transaction Mix</h3>
+              <div class="panel__subtitle">Portfolio Composition</div>
+            </div>
+          </div>
+          <div class="panel__body">
+            <div class="chart-wrap"><canvas id="txMixChart"></canvas></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <div class="panel">
+          <div class="panel__head">
+            <div>
+              <h3 class="panel__title">${icon('agents', 16)} Top Clients by Revenue</h3>
+              <div class="panel__subtitle">The Front-Runners</div>
+            </div>
+            <a href="#/agents" class="btn btn--ghost btn--sm">All Realtors →</a>
+          </div>
+          <div class="panel__body">
+            <div class="leaderboard">
+              ${topByRevenue.length === 0 ? '<div class="empty__body">No deals yet.</div>' : topByRevenue.map((a, i) => `
+                <div class="lb-row" data-agent="${escapeHtml(a.name)}">
+                  <div class="lb-row__rank">0${i + 1}</div>
+                  <div>
+                    <div class="lb-row__name">${escapeHtml(a.name)}</div>
+                    <div class="lb-row__meta">${a.dealCount} ${a.dealCount === 1 ? 'deal' : 'deals'} · ${escapeHtml(a.clientType)}</div>
+                  </div>
+                  <div class="lb-row__value">${fmtMoney(a.revenue, { decimals: 0 })}</div>
+                  <div class="lb-row__link">View →</div>
+                </div>
+              `).join('')}
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel__head">
+            <div>
+              <h3 class="panel__title">${icon('agents', 16)} Most Active Clients</h3>
+              <div class="panel__subtitle">By Deal Count</div>
+            </div>
+          </div>
+          <div class="panel__body">
+            <div class="leaderboard">
+              ${topByDeals.length === 0 ? '<div class="empty__body">No deals yet.</div>' : topByDeals.map((a, i) => `
+                <div class="lb-row" data-agent="${escapeHtml(a.name)}">
+                  <div class="lb-row__rank">0${i + 1}</div>
+                  <div>
+                    <div class="lb-row__name">${escapeHtml(a.name)}</div>
+                    <div class="lb-row__meta">${escapeHtml(a.clientType)} · ${fmtMoney(a.revenue, { decimals: 0 })}</div>
+                  </div>
+                  <div class="lb-row__value">${fmtNumber(a.dealCount)}</div>
+                  <div class="lb-row__link">View →</div>
+                </div>
+              `).join('')}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel__head">
+          <div>
+            <h3 class="panel__title">${icon('deals', 16)} Recent Deals</h3>
+            <div class="panel__subtitle">Latest Disbursements</div>
+          </div>
+          <a href="#/deals" class="btn btn--ghost btn--sm">All Deals →</a>
+        </div>
+        <div class="panel__body panel__body--tight">
+          <div class="table-wrap">
+            <table class="data">
+              <thead><tr>
+                <th>Order #</th>
+                <th>Property</th>
+                <th>Client</th>
+                <th>Type</th>
+                <th>Date</th>
+                <th class="num">Revenue</th>
+              </tr></thead>
+              <tbody>
+                ${recentDeals.length === 0 ? '<tr><td colspan="6" class="center muted">No deals recorded yet.</td></tr>' : recentDeals.map(d => `
+                  <tr class="is-clickable" data-deal="${d.id}">
+                    <td class="cell-strong">${escapeHtml(d.orderNumber || '—')}</td>
+                    <td>${escapeHtml(d.propertyAddress || '—')}</td>
+                    <td>${escapeHtml(d.client || '—')}</td>
+                    <td>${dealTypeTag(d.transactionType)}</td>
+                    <td class="muted">${fmtDate(d.disbursementDate)}</td>
+                    <td class="num cell-strong">${fmtMoney(d.revenue)}</td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+  `;
+};
+
+Views.dashboardPost = function() {
+  const o = Store.getOverview();
+  const years = Store.getYearsInData();
+  const currentYear = years[years.length - 1] || new Date().getFullYear();
+
+  buildMonthlyChart(currentYear);
+  buildTxMixChart(o);
+
+  document.getElementById('yearSelect')?.addEventListener('change', e => {
+    const y = Number(e.target.value);
+    buildMonthlyChart(y);
+    const sub = document.getElementById('monthlySubtitle');
+    if (sub) sub.textContent = `${y} Production`;
+  });
+
+  document.querySelectorAll('.lb-row').forEach(row => {
+    row.addEventListener('click', () => {
+      const name = row.getAttribute('data-agent');
+      if (name) location.hash = '#/agent/' + encodeURIComponent(name);
+    });
+  });
+
+  document.querySelectorAll('tr[data-deal]').forEach(row => {
+    row.addEventListener('click', () => {
+      const id = row.getAttribute('data-deal');
+      App.openDealModal(id);
+    });
+  });
+
+  document.querySelector('[data-action="open-deal-modal"]')?.addEventListener('click', () => App.openDealModal());
+};
+
+function buildMonthlyChart(year) {
+  const rows = Store.getMonthlyProduction(year);
+  const ctx = document.getElementById('monthlyRevenueChart');
+  if (!ctx) return;
+  if (CHARTS.monthlyRevenueChart) CHARTS.monthlyRevenueChart.destroy();
+
+  CHARTS.monthlyRevenueChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: rows.map(r => r.month),
+      datasets: [{
+        label: 'Revenue',
+        data: rows.map(r => r.revenue),
+        backgroundColor: CHART_COLORS.forestPrimary,
+        hoverBackgroundColor: CHART_COLORS.gold,
+        borderRadius: 2,
+        borderSkipped: false,
+        barThickness: 22
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: CHART_COLORS.forestDeep,
+          titleColor: CHART_COLORS.goldLight,
+          bodyColor: CHART_COLORS.cream,
+          padding: 12,
+          displayColors: false,
+          titleFont: { family: 'Montserrat', weight: '600', size: 11 },
+          bodyFont: { family: 'Cormorant Garamond', size: 18 },
+          callbacks: { label: (c) => fmtMoney(c.parsed.y, { decimals: 0 }) }
+        }
+      },
+      scales: {
+        x: {
+          grid: { display: false },
+          ticks: { color: CHART_COLORS.grey, font: CHART_FONT }
+        },
+        y: {
+          grid: { color: CHART_COLORS.line, drawBorder: false },
+          ticks: {
+            color: CHART_COLORS.grey,
+            font: CHART_FONT,
+            callback: v => fmtMoney(v, { decimals: 0, abbrev: true })
+          }
+        }
+      }
+    }
+  });
+}
+
+function buildTxMixChart(o) {
+  const ctx = document.getElementById('txMixChart');
+  if (!ctx) return;
+  if (CHARTS.txMixChart) CHARTS.txMixChart.destroy();
+
+  CHARTS.txMixChart = new Chart(ctx, {
+    type: 'doughnut',
+    data: {
+      labels: ['Purchase', 'Refinance', 'Subordinate'],
+      datasets: [{
+        data: [o.purchaseCt, o.refinanceCt, o.subordinateCt],
+        backgroundColor: [CHART_COLORS.forestPrimary, CHART_COLORS.gold, CHART_COLORS.forestLight],
+        borderColor: CHART_COLORS.cream,
+        borderWidth: 4,
+        hoverOffset: 8
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      cutout: '68%',
+      plugins: {
+        legend: {
+          position: 'bottom',
+          labels: {
+            color: CHART_COLORS.forestPrimary,
+            font: { family: 'Montserrat', size: 11, weight: '600' },
+            padding: 18,
+            boxWidth: 10,
+            boxHeight: 10
+          }
+        },
+        tooltip: {
+          backgroundColor: CHART_COLORS.forestDeep,
+          titleColor: CHART_COLORS.goldLight,
+          bodyColor: CHART_COLORS.cream,
+          padding: 12,
+          titleFont: { family: 'Montserrat', weight: '600', size: 11 },
+          bodyFont: { family: 'Cormorant Garamond', size: 16 },
+          callbacks: {
+            label: (c) => {
+              const total = c.dataset.data.reduce((s, v) => s + v, 0);
+              const pct = total ? ((c.parsed / total) * 100).toFixed(0) : 0;
+              return `${c.parsed} deals · ${pct}%`;
+            }
+          }
+        }
+      }
+    }
+  });
+}
+
+function dealTypeTag(t) {
+  if (!t) return '<span class="tag tag--subordinate">—</span>';
+  const cls = t === 'Purchase' ? 'purchase' : t === 'Refinance' ? 'refinance' : 'subordinate';
+  return `<span class="tag tag--${cls}">${icon(txIconFor(t), 12)}<span>${escapeHtml(t)}</span></span>`;
+}
+
+/* ========================================================================
+   Deals
+   ======================================================================== */
+
+Views.deals = function(query = {}) {
+  const deals = Store.getDeals();
+  const agents = Store.getAgents();
+  const years = Store.getYearsInData();
+
+  const search = (query.q || '').toLowerCase();
+  const yearF = query.year || '';
+  const typeF = query.type || '';
+  const monthF = query.month || '';
+  const agentF = query.agent || '';
+
+  let filtered = deals.filter(d => {
+    if (yearF && d.disbursementDate) {
+      if (String(new Date(d.disbursementDate).getFullYear()) !== yearF) return false;
+    }
+    if (monthF && d.disbursementDate) {
+      const mIdx = new Date(d.disbursementDate).getMonth();
+      if (MONTHS_SHORT[mIdx] !== monthF) return false;
+    }
+    if (typeF && d.transactionType !== typeF) return false;
+    if (agentF && d.client !== agentF && d.listingAgent !== agentF && d.sellingAgent !== agentF) return false;
+    if (search) {
+      const blob = [d.orderNumber, d.propertyAddress, d.client, d.listingAgent, d.sellingAgent]
+        .filter(Boolean).join(' ').toLowerCase();
+      if (!blob.includes(search)) return false;
+    }
+    return true;
+  });
+
+  // Apply column sort (default: disbursement DESC — newest first)
+  const sortField = query.sort || 'disbursementDate';
+  const sortDir   = query.dir   || (query.sort ? 'asc' : 'desc');
+  const DEAL_SORT_GETTERS = {
+    orderNumber:       d => d.orderNumber || '',
+    listingAgent:      d => d.listingAgent || '',
+    sellingAgent:      d => d.sellingAgent || '',
+    client:            d => d.client || '',
+    clientAttribution: d => d.clientAttribution || computeClientSource(d),
+    propertyAddress:   d => d.propertyAddress || '',
+    disbursementDate:  d => d.disbursementDate || '',
+    transactionType:   d => d.transactionType || '',
+    settlementFee:     d => Number(d.settlementFee || 0),
+    lendersPolicy:     d => Number(d.lendersPolicy || 0),
+    ownersPolicy:      d => Number(d.ownersPolicy || 0),
+    fileFee:           d => Number(d.fileFee || 0),
+    revenue:           d => Number(d.revenue || 0),
+    month:             d => d.disbursementDate ? new Date(d.disbursementDate).getMonth() : -1,
+    year:              d => d.disbursementDate ? new Date(d.disbursementDate).getFullYear() : 0,
+    underwriter:       d => d.underwriter || ''
+  };
+  const getter = DEAL_SORT_GETTERS[sortField] || DEAL_SORT_GETTERS.disbursementDate;
+  filtered = sortItems(filtered, getter, sortDir);
+
+  const totalRev = filtered.reduce((s, d) => s + Number(d.revenue || 0), 0);
+
+  return `
+    <section class="view">
+      <header class="view-header">
+        <div class="view-header__left">
+          <div class="eyebrow">Transactions</div>
+          <h1>Every deal, <em>documented.</em></h1>
+        </div>
+        <div class="view-header__right">
+          <button class="btn btn--ghost" data-action="export-all-deals">${icon('download', 14)} Export All CSV</button>
+          <button class="btn btn--ghost" data-action="open-import-modal">⤒ Import CSV / Excel</button>
+          <button class="btn btn--gold" data-action="open-deal-modal">+ New Deal</button>
+        </div>
+      </header>
+
+      <div class="panel">
+        <div class="filters">
+          <div class="filters__search">
+            <input type="search" id="dealSearch" value="${escapeHtml(query.q || '')}" placeholder="Search order #, address, agent, client" />
+          </div>
+          <select id="filterYear">
+            <option value="">All years</option>
+            ${years.map(y => `<option value="${y}" ${String(y) === yearF ? 'selected' : ''}>${y}</option>`).join('')}
+          </select>
+          <select id="filterMonth">
+            <option value="">All months</option>
+            ${MONTHS_SHORT.map(m => `<option value="${m}" ${m === monthF ? 'selected' : ''}>${m}</option>`).join('')}
+          </select>
+          <select id="filterType">
+            <option value="">All types</option>
+            ${TRANSACTION_TYPES.map(t => `<option value="${t}" ${t === typeF ? 'selected' : ''}>${t}</option>`).join('')}
+          </select>
+          <select id="filterAgent">
+            <option value="">All clients</option>
+            ${agents.map(a => `<option value="${escapeHtml(a.name)}" ${a.name === agentF ? 'selected' : ''}>${escapeHtml(a.name)}</option>`).join('')}
+          </select>
+        </div>
+
+        <div class="panel__body" style="padding: 16px 32px; background: var(--forest-primary); color: var(--off-white); display: flex; justify-content: space-between; align-items: center;">
+          <div>
+            <span style="color: var(--rich-gold); font-size: 10px; letter-spacing: 2.5px; text-transform: uppercase; font-weight: 600; margin-right: 12px;">Showing</span>
+            <span style="font-family: var(--serif); font-size: 22px; color: var(--off-white); font-weight: 400;">${filtered.length}</span>
+            <span style="opacity: 0.7; font-size: 12px; margin-left: 6px;">of ${deals.length} deals</span>
+          </div>
+          <div>
+            <span style="color: var(--rich-gold); font-size: 10px; letter-spacing: 2.5px; text-transform: uppercase; font-weight: 600; margin-right: 12px;">Total Revenue</span>
+            <span style="font-family: var(--serif); font-size: 26px; color: var(--off-white); font-weight: 400;">${fmtMoney(totalRev, { decimals: 0 })}</span>
+          </div>
+        </div>
+
+        <div class="table-wrap">
+          <table class="data data--wide">
+            <thead><tr>
+              <th class="select-col"><input type="checkbox" class="ra-check" id="bulkSelectAll" aria-label="Select all" /></th>
+              ${sortableTH('orderNumber',       'Order #',           query)}
+              ${sortableTH('listingAgent',      'Listing Agent',     query)}
+              ${sortableTH('sellingAgent',      'Selling Agent',     query)}
+              ${sortableTH('client',            'Client',            query)}
+              ${sortableTH('clientAttribution', 'Client Attribution',query)}
+              ${sortableTH('propertyAddress',   'Property Address',  query)}
+              ${sortableTH('disbursementDate',  'Disbursement',      query)}
+              ${sortableTH('transactionType',   'Type',              query)}
+              ${sortableTH('settlementFee',     'Settlement',        query, 'num')}
+              ${sortableTH('lendersPolicy',     "Lender's",          query, 'num')}
+              ${sortableTH('ownersPolicy',      "Owner's",           query, 'num')}
+              ${sortableTH('fileFee',           'File Fee',          query, 'num')}
+              ${sortableTH('revenue',           'Revenue',           query, 'num')}
+              ${sortableTH('month',             'Month',             query)}
+              ${sortableTH('year',              'Year',              query)}
+              ${sortableTH('underwriter',       'Underwriter',       query)}
+              <th></th>
+            </tr></thead>
+            <tbody>
+              ${filtered.length === 0 ? `<tr><td colspan="18" class="center muted" style="padding: 64px 20px;">No deals match your filters.</td></tr>` : filtered.map(d => {
+                const attr = d.clientAttribution || computeClientSource(d);
+                const attrClass = attr === 'Direct' ? 'forest' : 'gold';
+                const listing = (d.listingAgent || '').trim();
+                const selling = (d.sellingAgent || '').trim();
+                const client  = (d.client || '').trim();
+                const isListingClient = listing && (client.toLowerCase() === listing.toLowerCase() || attr === 'Both');
+                const isSellingClient = selling && (client.toLowerCase() === selling.toLowerCase() || attr === 'Both');
+                const dt = d.disbursementDate ? new Date(d.disbursementDate) : null;
+                const month = dt && !isNaN(dt) ? dt.toLocaleString('en-US', { month: 'short' }) : '—';
+                const year  = dt && !isNaN(dt) ? dt.getFullYear() : '—';
+                return `
+                <tr data-bulk-row>
+                  <td class="select-col"><input type="checkbox" class="ra-check" data-bulk-id="${d.id}" aria-label="Select ${escapeHtml(d.orderNumber || '')}" /></td>
+                  <td class="cell-strong">${escapeHtml(d.orderNumber || '—')}</td>
+                  <td>${listing ? `<button class="cell-agent ${isListingClient ? 'is-client' : ''}" data-set-client="${d.id}:listing" title="${isListingClient ? 'Current client' : 'Click to set as client'}">${isListingClient ? '<span class="cell-agent__star">★</span>' : ''}<span class="cell-agent__name">${escapeHtml(listing)}</span></button>` : '<span class="muted">—</span>'}</td>
+                  <td>${selling ? `<button class="cell-agent ${isSellingClient ? 'is-client' : ''}" data-set-client="${d.id}:selling" title="${isSellingClient ? 'Current client' : 'Click to set as client'}">${isSellingClient ? '<span class="cell-agent__star">★</span>' : ''}<span class="cell-agent__name">${escapeHtml(selling)}</span></button>` : '<span class="muted">—</span>'}</td>
+                  <td>${client ? `<a href="#/agent/${encodeURIComponent(client)}" class="cell-client-link">${escapeHtml(client)}</a>` : '<span class="muted">—</span>'}</td>
+                  <td><span class="tag tag--${attrClass}">${escapeHtml(attr)}</span></td>
+                  <td>${escapeHtml(d.propertyAddress || '—')}</td>
+                  <td class="muted">${fmtDate(d.disbursementDate)}</td>
+                  <td>${dealTypeTag(d.transactionType)}</td>
+                  <td class="num">${d.settlementFee ? fmtMoney(d.settlementFee) : '—'}</td>
+                  <td class="num">${d.lendersPolicy ? fmtMoney(d.lendersPolicy) : '—'}</td>
+                  <td class="num">${d.ownersPolicy ? fmtMoney(d.ownersPolicy) : '—'}</td>
+                  <td class="num muted">${d.fileFee ? fmtMoney(d.fileFee) : '—'}</td>
+                  <td class="num cell-strong">${fmtMoney(d.revenue)}</td>
+                  <td class="muted">${month}</td>
+                  <td class="muted">${year}</td>
+                  <td class="muted">${escapeHtml(d.underwriter || '—')}</td>
+                  <td>
+                    <div class="inline-actions">
+                      <button class="icon-btn" data-edit-deal="${d.id}">Edit</button>
+                      <button class="icon-btn icon-btn--danger" data-delete-deal="${d.id}">Delete</button>
+                    </div>
+                  </td>
+                </tr>`;
+              }).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  `;
+};
+
+Views.dealsPost = function() {
+  const apply = () => {
+    const q = {
+      q: document.getElementById('dealSearch').value.trim(),
+      year: document.getElementById('filterYear').value,
+      month: document.getElementById('filterMonth').value,
+      type: document.getElementById('filterType').value,
+      agent: document.getElementById('filterAgent').value,
+      sort: App.currentParams?.sort || '',
+      dir:  App.currentParams?.dir  || ''
+    };
+    App.navigate('deals', q);
+  };
+
+  document.getElementById('dealSearch').addEventListener('input', debounce(apply, 250));
+  ['filterYear', 'filterMonth', 'filterType', 'filterAgent'].forEach(id => {
+    document.getElementById(id).addEventListener('change', apply);
+  });
+
+  document.querySelector('[data-action="open-deal-modal"]')?.addEventListener('click', () => App.openDealModal());
+  document.querySelector('[data-action="open-import-modal"]')?.addEventListener('click', () => App.openImportModal());
+  document.querySelector('[data-action="export-all-deals"]')?.addEventListener('click', () => {
+    const deals = Store.getDeals();
+    if (!deals.length) return App.toast('No deals to export');
+    const rows = [
+      ['Order #', 'Listing Agent', 'Selling Agent', 'Client', 'Client Attribution',
+       'Property Address', 'Disbursement Date', 'Transaction Type',
+       'Settlement Fee', "Lender's Policy", "Owner's Policy", 'File Fee', 'Revenue',
+       'Month', 'Year', 'Underwriter'],
+      ...deals.map(d => {
+        const dt = d.disbursementDate ? new Date(d.disbursementDate) : null;
+        const month = dt && !isNaN(dt) ? dt.toLocaleString('en-US', { month: 'short' }) : '';
+        const year  = dt && !isNaN(dt) ? dt.getFullYear() : '';
+        return [
+          d.orderNumber || '', d.listingAgent || '', d.sellingAgent || '',
+          d.client || '', d.clientAttribution || computeClientSource(d),
+          d.propertyAddress || '', d.disbursementDate || '', d.transactionType || '',
+          d.settlementFee || 0, d.lendersPolicy || 0, d.ownersPolicy || 0,
+          d.fileFee || 0, d.revenue || 0,
+          month, year, d.underwriter || ''
+        ];
+      })
+    ];
+    downloadCSV(`deals-all-${new Date().toISOString().slice(0,10)}.csv`, rows);
+    App.toast(`${deals.length} deal${deals.length === 1 ? '' : 's'} exported`);
+  });
+
+  // Wire clickable sort headers
+  wireSortableHeaders('deals', {
+    q: document.getElementById('dealSearch')?.value?.trim() || '',
+    year: document.getElementById('filterYear')?.value || '',
+    month: document.getElementById('filterMonth')?.value || '',
+    type: document.getElementById('filterType')?.value || '',
+    agent: document.getElementById('filterAgent')?.value || '',
+    sort: App.currentParams?.sort,
+    dir:  App.currentParams?.dir
+  });
+  document.querySelectorAll('[data-edit-deal]').forEach(b => {
+    b.addEventListener('click', () => App.openDealModal(b.getAttribute('data-edit-deal')));
+  });
+
+  // Click agent name in table to set as client.
+  // Behavior (simple & predictable):
+  //   - Click an agent → they become the single client (★ moves)
+  //   - Click the already-active agent → no-op (already the client)
+  //   - To set "Both Sides" → use Edit Deal modal chip picker
+  document.querySelectorAll('[data-set-client]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const [id, which] = btn.getAttribute('data-set-client').split(':');
+      const d = Store.getDeal(id);
+      if (!d) return;
+      const listing = (d.listingAgent || '').trim();
+      const selling = (d.sellingAgent || '').trim();
+      const target  = which === 'listing' ? listing : selling;
+      if (!target) return;
+
+      const current     = (d.client || '').trim();
+      const currentAttr = d.clientAttribution || computeClientSource(d);
+
+      // If this agent is already the single client, no-op
+      if (currentAttr !== 'Both' && current.toLowerCase() === target.toLowerCase()) return;
+
+      const newClient = target;
+      const newAttr   = which === 'listing' ? 'Listing Agent' : 'Selling Agent';
+
+      Store.saveDeal({ ...d, client: newClient, clientAttribution: newAttr });
+      App.toast(`Client set: ${newClient}`);
+      App.render({ preserveScroll: true });
+    });
+  });
+  document.querySelectorAll('[data-delete-deal]').forEach(b => {
+    b.addEventListener('click', () => {
+      const id = b.getAttribute('data-delete-deal');
+      const d = Store.getDeal(id);
+      if (!d) return;
+      if (confirm(`Delete deal ${d.orderNumber || ''}? This cannot be undone.`)) {
+        Store.deleteDeal(id);
+        App.toast('Deal removed');
+        App.render();
+      }
+    });
+  });
+
+  BulkSelect.init({
+    scope: 'deals',
+    itemNoun: 'deal',
+    actions: [
+      {
+        label: 'Export CSV',
+        icon: 'download',
+        onClick: (ids) => {
+          const deals = ids.map(id => Store.getDeal(id)).filter(Boolean);
+          const rows = [
+            ['Order #', 'Disbursement', 'Property Address', 'Client', 'Listing Agent', 'Selling Agent', 'Source', 'Type', 'Settlement Fee', 'Lender Policy', 'Owner Policy', 'File Fee', 'Revenue'],
+            ...deals.map(d => [
+              d.orderNumber || '', d.disbursementDate || '', d.propertyAddress || '',
+              d.client || '', d.listingAgent || '', d.sellingAgent || '',
+              d.clientAttribution || computeClientSource(d),
+              d.transactionType || '',
+              d.settlementFee || 0, d.lendersPolicy || 0, d.ownersPolicy || 0,
+              d.fileFee || 0, d.revenue || 0
+            ])
+          ];
+          downloadCSV(`deals-export-${new Date().toISOString().slice(0,10)}.csv`, rows);
+          App.toast(`${deals.length} deal${deals.length === 1 ? '' : 's'} exported`);
+        }
+      },
+      {
+        label: 'Recalculate',
+        icon: 'settings',
+        onClick: (ids) => {
+          let changed = 0;
+          for (const id of ids) {
+            const d = Store.getDeal(id);
+            if (!d) continue;
+            const newFee = computeFileFee(d.transactionType);
+            const newRev = computeRevenue(d);
+            if (d.fileFee !== newFee || d.revenue !== newRev) {
+              Store.saveDeal({ ...d, fileFee: newFee, revenue: newRev });
+              changed++;
+            }
+          }
+          App.toast(`${changed} deal${changed === 1 ? '' : 's'} recalculated`);
+          App.render();
+        }
+      },
+      {
+        label: 'Delete',
+        icon: 'trash',
+        danger: true,
+        onClick: (ids) => {
+          if (!confirm(`Delete ${ids.length} deal${ids.length === 1 ? '' : 's'}? This cannot be undone.`)) return;
+          const n = Store.deleteDeals(ids);
+          App.toast(`${n} deal${n === 1 ? '' : 's'} removed`);
+          App.render();
+        }
+      }
+    ]
+  });
+};
+
+/* ========================================================================
+   Agents (Realtor Database)
+   ======================================================================== */
+
+Views.agents = function(query = {}) {
+  const agents = Store.getAgents();
+  const search = (query.q || '').toLowerCase();
+
+  let filtered = agents.filter(a => !search || a.name.toLowerCase().includes(search));
+
+  const sortField = query.sort || 'revenue';
+  const sortDir   = query.dir  || (query.sort ? 'asc' : 'desc');
+  const AGENT_SORT_GETTERS = {
+    name:       a => a.name || '',
+    clientType: a => a.clientType || '',
+    isActive:   a => a.isActive ? 1 : 0,
+    dealCount:  a => Number(a.dealCount || 0),
+    revenue:    a => Number(a.revenue || 0),
+    avgRevenue: a => Number(a.avgRevenue || 0),
+    expenses:   a => Number(a.expenses || 0),
+    roi:        a => Number(a.roi || 0),
+    firstDeal:  a => a.firstDeal || '',
+    lastDeal:   a => a.lastDeal || ''
+  };
+  const getter = AGENT_SORT_GETTERS[sortField] || AGENT_SORT_GETTERS.revenue;
+  filtered = sortItems(filtered, getter, sortDir);
+
+  const activeCount = agents.filter(a => a.isActive).length;
+
+  return `
+    <section class="view">
+      <header class="view-header">
+        <div class="view-header__left">
+          <div class="eyebrow">Realtor Database</div>
+          <h1>The <em>people</em> behind the production.</h1>
+        </div>
+        <div class="view-header__right">
+          <span class="muted" style="font-size: 12px; letter-spacing: 1px; margin-right: 12px;">${activeCount} active · ${agents.length} total</span>
+          <button class="btn btn--ghost" data-action="export-all-agents">${icon('download', 14)} Export All CSV</button>
+        </div>
+      </header>
+
+      <div class="panel">
+        <div class="filters">
+          <div class="filters__search">
+            <input type="search" id="agentSearch" value="${escapeHtml(query.q || '')}" placeholder="Search by name" />
+          </div>
+          <div class="filters__hint muted" style="font-size: 11px; letter-spacing: 1px; text-transform: uppercase; padding: 0 6px;">Click any column header to sort</div>
+        </div>
+
+        <div class="table-wrap">
+          <table class="data">
+            <thead><tr>
+              <th class="select-col"><input type="checkbox" class="ra-check" id="bulkSelectAll" aria-label="Select all" /></th>
+              ${sortableTH('name',       'Name',       query)}
+              ${sortableTH('clientType', 'Type',       query)}
+              ${sortableTH('isActive',   'Active',     query, 'center')}
+              ${sortableTH('dealCount',  'Deals',      query, 'num')}
+              ${sortableTH('revenue',    'Revenue',    query, 'num')}
+              ${sortableTH('avgRevenue', 'Avg / Deal', query, 'num')}
+              ${sortableTH('expenses',   'Expenses',   query, 'num')}
+              ${sortableTH('roi',        'ROI',        query, 'num')}
+              ${sortableTH('firstDeal',  'First Deal', query)}
+              ${sortableTH('lastDeal',   'Last Deal',  query)}
+            </tr></thead>
+            <tbody>
+              ${filtered.length === 0 ? '<tr><td colspan="11" class="center muted" style="padding: 64px 20px;">No realtors match.</td></tr>' : filtered.map(a => `
+                <tr class="is-clickable" data-agent="${escapeHtml(a.name)}" data-bulk-row>
+                  <td class="select-col"><input type="checkbox" class="ra-check" data-bulk-id="${escapeHtml(a.name)}" aria-label="Select ${escapeHtml(a.name)}" /></td>
+                  <td class="cell-strong">${escapeHtml(a.name)}</td>
+                  <td><span class="tag tag--${a.clientType === 'Both' ? 'gold' : 'forest'}">${escapeHtml(a.clientType)}</span></td>
+                  <td class="center">${a.isActive ? '●' : '<span class="muted">—</span>'}</td>
+                  <td class="num">${fmtNumber(a.dealCount)}</td>
+                  <td class="num cell-strong">${fmtMoney(a.revenue, { decimals: 0 })}</td>
+                  <td class="num">${a.avgRevenue ? fmtMoney(a.avgRevenue, { decimals: 0 }) : '—'}</td>
+                  <td class="num muted">${a.expenses ? fmtMoney(a.expenses, { decimals: 0 }) : '—'}</td>
+                  <td class="num">${fmtRoi(a.roi)}</td>
+                  <td class="muted">${fmtDate(a.firstDeal)}</td>
+                  <td class="muted">${fmtDate(a.lastDeal)}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  `;
+};
+
+Views.agentsPost = function() {
+  const apply = () => {
+    App.navigate('agents', {
+      q: document.getElementById('agentSearch').value.trim(),
+      sort: App.currentParams?.sort || '',
+      dir:  App.currentParams?.dir  || ''
+    });
+  };
+  document.getElementById('agentSearch').addEventListener('input', debounce(apply, 250));
+
+  wireSortableHeaders('agents', {
+    q: document.getElementById('agentSearch')?.value?.trim() || '',
+    sort: App.currentParams?.sort,
+    dir:  App.currentParams?.dir
+  });
+
+  document.querySelector('[data-action="export-all-agents"]')?.addEventListener('click', () => {
+    const agents = Store.getAgents();
+    if (!agents.length) return App.toast('No realtors to export');
+    const rows = [
+      ['Name', 'Type', 'Active', 'Deal Count', 'Purchase', 'Refinance', 'Subordinate',
+       'Revenue', 'Avg per Deal', 'Expenses', 'Cost per Deal', 'ROI',
+       'First Deal', 'Last Deal', 'Days Active'],
+      ...agents.map(a => [
+        a.name, a.clientType, a.isActive ? 'Active' : 'Inactive',
+        a.dealCount, a.purchase, a.refinance, a.subordinate,
+        a.revenue, a.avgRevenue, a.expenses, a.costPerDeal,
+        a.roi === 999 ? 'Infinite' : a.roi,
+        a.firstDeal || '', a.lastDeal || '', a.daysAsClient
+      ])
+    ];
+    downloadCSV(`realtors-all-${new Date().toISOString().slice(0,10)}.csv`, rows);
+    App.toast(`${agents.length} realtor${agents.length === 1 ? '' : 's'} exported`);
+  });
+
+  document.querySelectorAll('tr[data-agent]').forEach(row => {
+    row.addEventListener('click', (e) => {
+      // Don't navigate when interacting with the checkbox or when a selection is active
+      if (e.target.closest('.select-col, input, button, a')) return;
+      if (BulkSelect.selected && BulkSelect.selected.size > 0) return;
+      location.hash = '#/agent/' + encodeURIComponent(row.getAttribute('data-agent'));
+    });
+  });
+
+  BulkSelect.init({
+    scope: 'agents',
+    itemNoun: 'realtor',
+    actions: [
+      {
+        label: 'Export CSV',
+        icon: 'download',
+        onClick: (names) => {
+          const agents = names.map(n => Store.getAgent(n)).filter(Boolean);
+          const rows = [
+            ['Name', 'Type', 'Active', 'Deal Count', 'Purchase', 'Refinance', 'Subordinate', 'Revenue', 'Avg per Deal', 'Expenses', 'Cost per Deal', 'ROI', 'First Deal', 'Last Deal', 'Days Active'],
+            ...agents.map(a => [
+              a.name, a.clientType, a.isActive ? 'Active' : 'Inactive',
+              a.dealCount, a.purchase, a.refinance, a.subordinate,
+              a.revenue, a.avgRevenue, a.expenses, a.costPerDeal,
+              a.roi === 999 ? 'Infinite' : a.roi,
+              a.firstDeal || '', a.lastDeal || '', a.daysAsClient
+            ])
+          ];
+          downloadCSV(`realtors-export-${new Date().toISOString().slice(0,10)}.csv`, rows);
+          App.toast(`${agents.length} realtor${agents.length === 1 ? '' : 's'} exported`);
+        }
+      },
+      {
+        label: 'View Their Deals',
+        icon: 'deals',
+        primary: true,
+        onClick: (names) => {
+          if (names.length === 1) {
+            location.hash = '#/agent/' + encodeURIComponent(names[0]);
+          } else {
+            App.toast('Tip: click a single realtor to open their profile');
+          }
+        }
+      },
+      {
+        label: 'Delete All Deals',
+        icon: 'trash',
+        danger: true,
+        onClick: (names) => {
+          const dealIds = Store.getDeals()
+            .filter(d => names.includes(d.client))
+            .map(d => d.id);
+          if (dealIds.length === 0) {
+            App.toast('No credited deals to delete for the selected realtors');
+            return;
+          }
+          if (!confirm(`Delete ${dealIds.length} deal${dealIds.length === 1 ? '' : 's'} credited to ${names.length} realtor${names.length === 1 ? '' : 's'}? Realtors with no remaining activity will disappear. This cannot be undone.`)) return;
+          const n = Store.deleteDeals(dealIds);
+          App.toast(`${n} deal${n === 1 ? '' : 's'} removed`);
+          App.render();
+        }
+      }
+    ]
+  });
+};
+
+/* ========================================================================
+   Underwriters database (list)
+   ======================================================================== */
+
+Views.underwriters = function(query = {}) {
+  const underwriters = Store.getUnderwriters();
+  const search = (query.q || '').toLowerCase();
+
+  let filtered = underwriters.filter(u => !search || u.name.toLowerCase().includes(search));
+
+  const sortField = query.sort || 'dealCount';
+  const sortDir   = query.dir  || (query.sort ? 'asc' : 'desc');
+  const UW_SORT_GETTERS = {
+    name:         u => u.name || '',
+    dealCount:    u => Number(u.dealCount || 0),
+    revenue:      u => Number(u.revenue || 0),
+    ownersPolicy: u => Number(u.ownersPolicy || 0),
+    lendersPolicy:u => Number(u.lendersPolicy || 0),
+    totalPremium: u => Number(u.totalPremium || 0),
+    avgPremium:   u => Number(u.avgPremium || 0),
+    firstDeal:    u => u.firstDeal || '',
+    lastDeal:     u => u.lastDeal || ''
+  };
+  const getter = UW_SORT_GETTERS[sortField] || UW_SORT_GETTERS.dealCount;
+  filtered = sortItems(filtered, getter, sortDir);
+
+  const totalDeals = underwriters.reduce((s, u) => s + u.dealCount, 0);
+  const totalPremium = underwriters.reduce((s, u) => s + u.totalPremium, 0);
+
+  return `
+    <section class="view">
+      <header class="view-header">
+        <div class="view-header__left">
+          <div class="eyebrow">Title Insurance Partners</div>
+          <h1>Every policy, <em>underwritten.</em></h1>
+        </div>
+        <div class="view-header__right">
+          <span class="muted" style="font-size: 12px; letter-spacing: 1px; margin-right: 12px;">${underwriters.length} underwriter${underwriters.length === 1 ? '' : 's'} · ${totalDeals} total deals</span>
+          <button class="btn btn--ghost" data-action="export-all-underwriters">${icon('download', 14)} Export All CSV</button>
+        </div>
+      </header>
+
+      <div class="panel">
+        <div class="panel__body panel__body--summary">
+          <div class="summary-hero" data-animate="hero">
+            <div class="summary-hero__label">Total Premium Volume</div>
+            <div class="summary-hero__value" data-countup="${totalPremium.toFixed(0)}">${fmtMoney(totalPremium, { decimals: 0 })}</div>
+            <div class="summary-hero__meta">
+              <span class="summary-hero__metaItem"><span class="summary-hero__metaValue">${totalDeals}</span> deals</span>
+              <span class="summary-hero__metaDot"></span>
+              <span class="summary-hero__metaItem">Across <span class="summary-hero__metaValue">${underwriters.length}</span> underwriters</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="filters">
+          <div class="filters__search">
+            <input type="search" id="uwSearch" value="${escapeHtml(query.q || '')}" placeholder="Search by underwriter name" />
+          </div>
+          <div class="filters__hint muted" style="font-size: 11px; letter-spacing: 1px; text-transform: uppercase; padding: 0 6px;">Click a row for detail</div>
+        </div>
+
+        <div class="table-wrap">
+          <table class="data">
+            <thead><tr>
+              ${sortableTH('name',         'Underwriter',    query)}
+              ${sortableTH('dealCount',    'Deals',          query, 'num')}
+              ${sortableTH('ownersPolicy', "Owner's Policy", query, 'num')}
+              ${sortableTH('lendersPolicy', "Lender's Policy", query, 'num')}
+              ${sortableTH('totalPremium', 'Total Premium',  query, 'num')}
+              ${sortableTH('avgPremium',   'Avg / Deal',     query, 'num')}
+              ${sortableTH('revenue',      'Revenue',        query, 'num')}
+              ${sortableTH('firstDeal',    'First Deal',     query)}
+              ${sortableTH('lastDeal',     'Last Deal',      query)}
+            </tr></thead>
+            <tbody>
+              ${filtered.length === 0 ? `<tr><td colspan="9" class="center muted" style="padding: 64px 20px;">No underwriters recorded yet. Add an underwriter name to any deal to start tracking.</td></tr>` : filtered.map(u => `
+                <tr class="is-clickable" data-underwriter="${escapeHtml(u.name)}">
+                  <td class="cell-strong">${escapeHtml(u.name)}</td>
+                  <td class="num cell-strong">${fmtNumber(u.dealCount)}</td>
+                  <td class="num">${u.ownersPolicy ? fmtMoney(u.ownersPolicy, { decimals: 0 }) : '—'}</td>
+                  <td class="num">${u.lendersPolicy ? fmtMoney(u.lendersPolicy, { decimals: 0 }) : '—'}</td>
+                  <td class="num cell-strong">${u.totalPremium ? fmtMoney(u.totalPremium, { decimals: 0 }) : '—'}</td>
+                  <td class="num muted">${u.avgPremium ? fmtMoney(u.avgPremium, { decimals: 0 }) : '—'}</td>
+                  <td class="num">${fmtMoney(u.revenue, { decimals: 0 })}</td>
+                  <td class="muted">${fmtDate(u.firstDeal)}</td>
+                  <td class="muted">${fmtDate(u.lastDeal)}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  `;
+};
+
+Views.underwritersPost = function() {
+  Animate.heroIn('[data-animate="hero"]');
+  Animate.countUp('.summary-hero__value[data-countup]', { duration: 1.2 });
+
+  const apply = () => App.navigate('underwriters', {
+    q: document.getElementById('uwSearch')?.value?.trim() || '',
+    sort: App.currentParams?.sort || '',
+    dir:  App.currentParams?.dir  || ''
+  });
+  document.getElementById('uwSearch')?.addEventListener('input', debounce(apply, 250));
+
+  wireSortableHeaders('underwriters', {
+    q: document.getElementById('uwSearch')?.value?.trim() || '',
+    sort: App.currentParams?.sort,
+    dir:  App.currentParams?.dir
+  });
+
+  document.querySelector('[data-action="export-all-underwriters"]')?.addEventListener('click', () => {
+    const rows = [
+      ['Underwriter', 'Deals', "Owner's Policy", "Lender's Policy", 'Total Premium', 'Avg Premium / Deal', 'Revenue', 'Purchase', 'Refinance', 'Subordinate', 'First Deal', 'Last Deal'],
+      ...Store.getUnderwriters().map(u => [
+        u.name, u.dealCount, u.ownersPolicy, u.lendersPolicy, u.totalPremium,
+        u.avgPremium, u.revenue,
+        u.purchase, u.refinance, u.subordinate,
+        u.firstDeal || '', u.lastDeal || ''
+      ])
+    ];
+    downloadCSV(`underwriters-all-${new Date().toISOString().slice(0,10)}.csv`, rows);
+    App.toast(`${Store.getUnderwriters().length} underwriter${Store.getUnderwriters().length === 1 ? '' : 's'} exported`);
+  });
+
+  document.querySelectorAll('tr[data-underwriter]').forEach(row => {
+    row.addEventListener('click', () => {
+      location.hash = '#/underwriter/' + encodeURIComponent(row.getAttribute('data-underwriter'));
+    });
+  });
+};
+
+/* ========================================================================
+   Underwriter detail
+   ======================================================================== */
+
+Views.underwriterDetail = function(name) {
+  const uw = Store.getUnderwriter(name);
+  if (!uw) {
+    return `
+      <section class="view">
+        <header class="view-header">
+          <div class="view-header__left">
+            <a href="#/underwriters" class="breadcrumb">← All Underwriters</a>
+            <h1>Underwriter not found.</h1>
+          </div>
+        </header>
+      </section>
+    `;
+  }
+
+  const deals = Store.getDealsForUnderwriter(name)
+    .slice()
+    .sort((a, b) => (b.disbursementDate || '').localeCompare(a.disbursementDate || ''));
+
+  return `
+    <section class="view">
+      <header class="view-header">
+        <div class="view-header__left">
+          <a href="#/underwriters" class="breadcrumb">← All Underwriters</a>
+          <div class="eyebrow">Title Insurance Underwriter</div>
+          <h1>${escapeHtml(uw.name)}</h1>
+        </div>
+        <div class="view-header__right">
+          <button class="btn btn--ghost" data-action="export-uw-deals">${icon('download', 14)} Export Deals</button>
+        </div>
+      </header>
+
+      <div class="stat-cards">
+        <div class="stat-card" data-animate="card">
+          <div class="stat-card__label">Total Deals</div>
+          <div class="stat-card__value" data-countup="${uw.dealCount}">${fmtNumber(uw.dealCount)}</div>
+          <div class="stat-card__meta">${uw.purchase} Purchase · ${uw.refinance} Refi · ${uw.subordinate} Sub</div>
+        </div>
+        <div class="stat-card" data-animate="card">
+          <div class="stat-card__label">Owner's Policy Volume</div>
+          <div class="stat-card__value" data-countup="${uw.ownersPolicy.toFixed(0)}">${fmtMoney(uw.ownersPolicy, { decimals: 0 })}</div>
+        </div>
+        <div class="stat-card" data-animate="card">
+          <div class="stat-card__label">Lender's Policy Volume</div>
+          <div class="stat-card__value" data-countup="${uw.lendersPolicy.toFixed(0)}">${fmtMoney(uw.lendersPolicy, { decimals: 0 })}</div>
+        </div>
+        <div class="stat-card stat-card--featured" data-animate="card">
+          <div class="stat-card__label">Total Premium</div>
+          <div class="stat-card__value" data-countup="${uw.totalPremium.toFixed(0)}">${fmtMoney(uw.totalPremium, { decimals: 0 })}</div>
+          <div class="stat-card__meta">Avg ${fmtMoney(uw.avgPremium, { decimals: 0 })} / deal</div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel__head">
+          <div>
+            <h3 class="panel__title">${icon('deals', 16)} All Deals Underwritten</h3>
+            <div class="panel__subtitle">${deals.length} deal${deals.length === 1 ? '' : 's'} sent to ${escapeHtml(uw.name)}</div>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="data">
+            <thead><tr>
+              <th>Underwriter</th>
+              <th>File Number</th>
+              <th>Disbursement</th>
+              <th>Type</th>
+              <th class="num">Owner's Policy</th>
+              <th class="num">Lender's Policy</th>
+              <th class="num">Total</th>
+            </tr></thead>
+            <tbody>
+              ${deals.length === 0 ? '<tr><td colspan="7" class="center muted" style="padding: 48px 20px;">No deals on file for this underwriter.</td></tr>' : deals.map(d => {
+                const total = Number(d.ownersPolicy || 0) + Number(d.lendersPolicy || 0);
+                return `
+                <tr>
+                  <td class="muted">${escapeHtml(uw.name)}</td>
+                  <td class="cell-strong">${escapeHtml(d.orderNumber || '—')}</td>
+                  <td class="muted">${fmtDate(d.disbursementDate)}</td>
+                  <td>${dealTypeTag(d.transactionType)}</td>
+                  <td class="num">${d.ownersPolicy ? fmtMoney(d.ownersPolicy) : '—'}</td>
+                  <td class="num">${d.lendersPolicy ? fmtMoney(d.lendersPolicy) : '—'}</td>
+                  <td class="num cell-strong">${total ? fmtMoney(total) : '—'}</td>
+                </tr>`;
+              }).join('')}
+              ${deals.length > 0 ? `
+                <tr class="totals-row">
+                  <td colspan="4" class="num"><strong>Totals</strong></td>
+                  <td class="num cell-strong">${fmtMoney(uw.ownersPolicy)}</td>
+                  <td class="num cell-strong">${fmtMoney(uw.lendersPolicy)}</td>
+                  <td class="num cell-strong">${fmtMoney(uw.totalPremium)}</td>
+                </tr>
+              ` : ''}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  `;
+};
+
+Views.underwriterDetailPost = function(name) {
+  Animate.staggerIn('[data-animate="card"]', { stagger: 0.06 });
+  Animate.countUp('.stat-card__value[data-countup]', { duration: 0.9 });
+
+  document.querySelector('[data-action="export-uw-deals"]')?.addEventListener('click', () => {
+    const uw = Store.getUnderwriter(name);
+    const deals = Store.getDealsForUnderwriter(name);
+    if (!deals.length) return App.toast('No deals to export');
+    const rows = [
+      ['Underwriter', 'File Number', 'Disbursement Date', 'Transaction Type', "Owner's Policy", "Lender's Policy", 'Total'],
+      ...deals.map(d => [
+        uw.name,
+        d.orderNumber || '',
+        d.disbursementDate || '',
+        d.transactionType || '',
+        Number(d.ownersPolicy || 0),
+        Number(d.lendersPolicy || 0),
+        Number(d.ownersPolicy || 0) + Number(d.lendersPolicy || 0)
+      ])
+    ];
+    const filename = `underwriter-${name.replace(/\s+/g, '-').toLowerCase()}-${new Date().toISOString().slice(0,10)}.csv`;
+    downloadCSV(filename, rows);
+    App.toast(`${deals.length} deal${deals.length === 1 ? '' : 's'} exported`);
+  });
+};
+
+/* ========================================================================
+   Agent detail
+   ======================================================================== */
+
+Views.agentDetail = function(name) {
+  const a = Store.getAgent(name);
+  if (!a) {
+    return `
+      <section class="view">
+        <a href="#/agents" class="back-link">← Back to Realtor Database</a>
+        <div class="empty">
+          <h3 class="empty__title">Not found</h3>
+          <div class="empty__body">No realtor named "${escapeHtml(name)}" exists in the database.</div>
+        </div>
+      </section>
+    `;
+  }
+
+  const deals = Store.getDealsForAgent(name).sort((x, y) => (y.disbursementDate || '').localeCompare(x.disbursementDate || ''));
+  const expenses = Store.getExpensesForAgent(name);
+
+  // Tag each deal with the agent's role
+  const roleFor = (d) => {
+    const roles = [];
+    if (d.client === name) roles.push('Client');
+    if (d.listingAgent === name) roles.push('Listing');
+    if (d.sellingAgent === name) roles.push('Selling');
+    return roles;
+  };
+  const creditedCount = deals.filter(d => d.client === name).length;
+  const participatedCount = deals.filter(d => d.client !== name).length;
+
+  return `
+    <section class="view">
+      <a href="#/agents" class="back-link">← Back to Realtor Database</a>
+
+      <div class="profile-header">
+        <div class="profile-header__eyebrow">Realtor Profile</div>
+        <h2 class="profile-header__name">${escapeHtml(a.name)}</h2>
+        <div class="profile-header__meta">
+          <div class="profile-header__meta-item">
+            Type<strong>${escapeHtml(a.clientType)}</strong>
+          </div>
+          <div class="profile-header__meta-item">
+            Status<strong>${a.isActive ? 'Active' : 'Inactive'}</strong>
+          </div>
+          <div class="profile-header__meta-item">
+            First Deal<strong>${fmtDate(a.firstDeal)}</strong>
+          </div>
+          <div class="profile-header__meta-item">
+            Last Deal<strong>${fmtDate(a.lastDeal)}</strong>
+          </div>
+          <div class="profile-header__meta-item">
+            Days Active<strong>${a.daysAsClient}</strong>
+          </div>
+        </div>
+      </div>
+
+      <div class="kpi-grid">
+        <div class="kpi kpi--light">
+          <div class="kpi__label">Total Revenue</div>
+          <div class="kpi__value">${fmtMoney(a.revenue, { decimals: 0 })}</div>
+          <div class="kpi__delta">Across ${a.dealCount} ${a.dealCount === 1 ? 'deal' : 'deals'}</div>
+        </div>
+        <div class="kpi kpi--light">
+          <div class="kpi__label">Avg per Deal</div>
+          <div class="kpi__value">${a.avgRevenue ? fmtMoney(a.avgRevenue, { decimals: 0 }) : '—'}</div>
+          <div class="kpi__delta">${a.purchase} purchase · ${a.refinance} refi · ${a.subordinate} sub</div>
+        </div>
+        <div class="kpi kpi--light">
+          <div class="kpi__label">Investment in Client</div>
+          <div class="kpi__value">${a.expenses ? fmtMoney(a.expenses, { decimals: 0 }) : '$0'}</div>
+          <div class="kpi__delta">${a.dealCount > 0 ? fmtMoney(a.costPerDeal, { decimals: 0 }) + ' per deal' : 'No deals yet'}</div>
+        </div>
+        <div class="kpi kpi--light">
+          <div class="kpi__label">ROI</div>
+          <div class="kpi__value">${fmtRoi(a.roi)}</div>
+          <div class="kpi__delta">${a.expenses === 0 && a.revenue > 0 ? 'No expenses recorded' : 'Revenue ÷ Expenses'}</div>
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <div class="panel">
+          <div class="panel__head">
+            <div>
+              <h3 class="panel__title">${icon('deals', 16)} Deals</h3>
+              <div class="panel__subtitle">${creditedCount} credited · ${participatedCount} as listing/selling</div>
+            </div>
+            <button class="btn btn--gold btn--sm" data-action="open-deal-modal" data-prefill-client="${escapeHtml(a.name)}">+ Log Deal</button>
+          </div>
+          <div class="panel__body panel__body--tight">
+            <div class="table-wrap">
+              <table class="data">
+                <thead><tr>
+                  <th>Date</th>
+                  <th>Order #</th>
+                  <th>Property</th>
+                  <th>Role</th>
+                  <th>Type</th>
+                  <th class="num">Revenue</th>
+                </tr></thead>
+                <tbody>
+                  ${deals.length === 0 ? '<tr><td colspan="6" class="center muted" style="padding: 48px 20px;">No deals recorded.</td></tr>' : deals.map(d => {
+                    const roles = roleFor(d);
+                    const isCredited = roles.includes('Client');
+                    const roleBadges = roles.map(r => `<span class="tag tag--${r === 'Client' ? 'gold' : 'forest'}">${r}</span>`).join(' ');
+                    return `
+                    <tr class="is-clickable" data-deal="${d.id}">
+                      <td class="muted">${fmtDate(d.disbursementDate)}</td>
+                      <td class="cell-strong">${escapeHtml(d.orderNumber || '—')}</td>
+                      <td>${escapeHtml(d.propertyAddress || '—')}</td>
+                      <td>${roleBadges}</td>
+                      <td>${dealTypeTag(d.transactionType)}</td>
+                      <td class="num ${isCredited ? 'cell-strong' : 'muted'}">${fmtMoney(d.revenue)}</td>
+                    </tr>
+                  `}).join('')}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel__head">
+            <div>
+              <h3 class="panel__title">${icon('expenses', 16)} Expenses</h3>
+              <div class="panel__subtitle">${expenses.length} entries</div>
+            </div>
+            <button class="btn btn--gold btn--sm" data-action="open-expense-modal" data-prefill-client="${escapeHtml(a.name)}">+ Log Expense</button>
+          </div>
+          <div class="panel__body panel__body--tight">
+            <div class="table-wrap">
+              <table class="data">
+                <thead><tr>
+                  <th>Date</th>
+                  <th>Type</th>
+                  <th>Description</th>
+                  <th class="num">Amount</th>
+                </tr></thead>
+                <tbody>
+                  ${expenses.length === 0 ? '<tr><td colspan="4" class="center muted" style="padding: 48px 20px;">No expenses logged.</td></tr>' : expenses.map(e => `
+                    <tr>
+                      <td class="muted">${fmtDate(e.date)}</td>
+                      <td><span class="tag tag--forest">${escapeHtml(e.expenseType || '—')}</span></td>
+                      <td>${escapeHtml(e.description || '—')}</td>
+                      <td class="num cell-strong">${fmtMoney(e.amount)}</td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      ${deals.length > 0 ? `
+        <div class="panel">
+          <div class="panel__head">
+            <div>
+              <h3 class="panel__title">${icon('monthly', 16)} Deal History</h3>
+              <div class="panel__subtitle">Revenue Timeline</div>
+            </div>
+          </div>
+          <div class="panel__body">
+            <div class="chart-wrap chart-wrap--short"><canvas id="agentTimeline"></canvas></div>
+          </div>
+        </div>
+      ` : ''}
+    </section>
+  `;
+};
+
+Views.agentDetailPost = function(name) {
+  document.querySelectorAll('[data-action="open-deal-modal"]').forEach(b => {
+    b.addEventListener('click', () => {
+      const client = b.getAttribute('data-prefill-client');
+      App.openDealModal(null, client ? { client } : undefined);
+    });
+  });
+  document.querySelectorAll('[data-action="open-expense-modal"]').forEach(b => {
+    b.addEventListener('click', () => {
+      const client = b.getAttribute('data-prefill-client');
+      App.openExpenseModal(null, client ? { client } : undefined);
+    });
+  });
+  document.querySelectorAll('tr[data-deal]').forEach(row => {
+    row.addEventListener('click', () => App.openDealModal(row.getAttribute('data-deal')));
+  });
+
+  // Timeline chart: one point per deal, by date, revenue
+  const deals = Store.getDealsForAgent(name)
+    .filter(d => d.disbursementDate)
+    .sort((a, b) => a.disbursementDate.localeCompare(b.disbursementDate));
+
+  const ctx = document.getElementById('agentTimeline');
+  if (ctx && deals.length > 0) {
+    if (CHARTS.agentTimeline) CHARTS.agentTimeline.destroy();
+    CHARTS.agentTimeline = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: deals.map(d => fmtDate(d.disbursementDate)),
+        datasets: [{
+          label: 'Revenue',
+          data: deals.map(d => d.revenue),
+          borderColor: CHART_COLORS.gold,
+          backgroundColor: 'rgba(201, 168, 76, 0.12)',
+          pointBackgroundColor: CHART_COLORS.forestPrimary,
+          pointBorderColor: CHART_COLORS.gold,
+          pointRadius: 5,
+          pointHoverRadius: 7,
+          tension: 0.25,
+          fill: true,
+          borderWidth: 2
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            backgroundColor: CHART_COLORS.forestDeep,
+            titleColor: CHART_COLORS.goldLight,
+            bodyColor: CHART_COLORS.cream,
+            padding: 12,
+            displayColors: false,
+            callbacks: {
+              title: (items) => items[0].label,
+              label: (c) => fmtMoney(c.parsed.y)
+            }
+          }
+        },
+        scales: {
+          x: { grid: { display: false }, ticks: { color: CHART_COLORS.grey, font: CHART_FONT, maxRotation: 0, autoSkip: true } },
+          y: { grid: { color: CHART_COLORS.line }, ticks: { color: CHART_COLORS.grey, font: CHART_FONT, callback: v => fmtMoney(v, { decimals: 0, abbrev: true }) } }
+        }
+      }
+    });
+  }
+};
+
+/* ========================================================================
+   Client Expenses
+   ======================================================================== */
+
+Views.expenses = function(query = {}) {
+  const expenses = Store.getExpenses();
+  const summary = Store.getExpensesSummaryByType();
+  const total = Object.values(summary).reduce((s, v) => s + v, 0);
+
+  const search = (query.q || '').toLowerCase();
+  const typeF = query.type || '';
+
+  let filtered = expenses.filter(e => {
+    if (typeF && e.expenseType !== typeF) return false;
+    if (search) {
+      const blob = [e.client, e.description, e.notes].filter(Boolean).join(' ').toLowerCase();
+      if (!blob.includes(search)) return false;
+    }
+    return true;
+  });
+
+  const sortField = query.sort || 'date';
+  const sortDir   = query.dir  || (query.sort ? 'asc' : 'desc');
+  const EXPENSE_SORT_GETTERS = {
+    date:        e => e.date || '',
+    client:      e => e.client || '',
+    expenseType: e => e.expenseType || '',
+    description: e => e.description || '',
+    notes:       e => e.notes || '',
+    amount:      e => Number(e.amount || 0)
+  };
+  const getter = EXPENSE_SORT_GETTERS[sortField] || EXPENSE_SORT_GETTERS.date;
+  filtered = sortItems(filtered, getter, sortDir);
+
+  return `
+    <section class="view">
+      <header class="view-header">
+        <div class="view-header__left">
+          <div class="eyebrow">Client Investment</div>
+          <h1>The cost of <em>relationships.</em></h1>
+        </div>
+        <div class="view-header__right">
+          <button class="btn btn--ghost" data-action="export-all-expenses">${icon('download', 14)} Export All CSV</button>
+          <button class="btn btn--gold" data-action="open-expense-modal">+ Log Expense</button>
+        </div>
+      </header>
+
+      <div class="panel">
+        <div class="panel__head">
+          <div>
+            <h3 class="panel__title">${icon('expenses', 16)} Summary by Category</h3>
+            <div class="panel__subtitle">Track every dollar you invested in relationships</div>
+          </div>
+        </div>
+        <div class="panel__body panel__body--summary">
+          <div class="summary-hero" data-animate="hero">
+            <div class="summary-hero__label">Total Invested</div>
+            <div class="summary-hero__value" data-countup="${total}">${fmtMoney(total, { decimals: 0 })}</div>
+            <div class="summary-hero__meta">
+              <span class="summary-hero__metaItem"><span class="summary-hero__metaValue">${Store.getExpenses().length}</span> entries</span>
+              <span class="summary-hero__metaDot"></span>
+              <span class="summary-hero__metaItem">Across <span class="summary-hero__metaValue">${EXPENSE_TYPES.filter(t => (summary[t] || 0) > 0).length}</span> categories</span>
+            </div>
+          </div>
+
+          <div class="cat-cards">
+            ${EXPENSE_TYPES.map((t, i) => {
+              const amount = summary[t] || 0;
+              const pct = total > 0 ? (amount / total) * 100 : 0;
+              const hasValue = amount > 0;
+              return `
+              <div class="cat-card ${hasValue ? 'has-value' : 'is-empty'}" data-animate="card" data-index="${i}">
+                <div class="cat-card__head">
+                  <div class="cat-card__icon">${icon(expenseIconFor(t), 18)}</div>
+                  <div class="cat-card__pct">${hasValue ? pct.toFixed(0) + '%' : '—'}</div>
+                </div>
+                <div class="cat-card__label">${t}</div>
+                <div class="cat-card__value" data-countup="${amount}">${fmtMoney(amount, { decimals: 0 })}</div>
+                <div class="cat-card__bar">
+                  <div class="cat-card__barFill" style="width: 0%" data-target-width="${pct.toFixed(1)}"></div>
+                </div>
+              </div>`;
+            }).join('')}
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="filters">
+          <div class="filters__search">
+            <input type="search" id="expenseSearch" value="${escapeHtml(query.q || '')}" placeholder="Search client or description" />
+          </div>
+          <select id="expenseTypeFilter">
+            <option value="">All categories</option>
+            ${EXPENSE_TYPES.map(t => `<option value="${t}" ${t === typeF ? 'selected' : ''}>${t}</option>`).join('')}
+          </select>
+        </div>
+        <div class="table-wrap">
+          <table class="data">
+            <thead><tr>
+              <th class="select-col"><input type="checkbox" class="ra-check" id="bulkSelectAll" aria-label="Select all" /></th>
+              ${sortableTH('date',        'Date',        query)}
+              ${sortableTH('client',      'Client',      query)}
+              ${sortableTH('expenseType', 'Category',    query)}
+              ${sortableTH('description', 'Description', query)}
+              ${sortableTH('notes',       'Notes',       query)}
+              ${sortableTH('amount',      'Amount',      query, 'num')}
+              <th></th>
+            </tr></thead>
+            <tbody>
+              ${filtered.length === 0 ? '<tr><td colspan="8" class="center muted" style="padding: 64px 20px;">No expenses recorded.</td></tr>' : filtered.map(e => `
+                <tr data-bulk-row>
+                  <td class="select-col"><input type="checkbox" class="ra-check" data-bulk-id="${e.id}" aria-label="Select expense" /></td>
+                  <td class="muted">${fmtDate(e.date)}</td>
+                  <td>${e.client ? `<a href="#/agent/${encodeURIComponent(e.client)}" style="color: var(--forest-primary); font-weight: 500;">${escapeHtml(e.client)}</a>` : '—'}</td>
+                  <td><span class="tag tag--forest">${icon(expenseIconFor(e.expenseType), 12)}<span>${escapeHtml(e.expenseType || '—')}</span></span></td>
+                  <td>${escapeHtml(e.description || '—')}</td>
+                  <td class="cell-muted">${escapeHtml(e.notes || '')}</td>
+                  <td class="num cell-strong">${fmtMoney(e.amount)}</td>
+                  <td>
+                    <div class="inline-actions">
+                      <button class="icon-btn" data-edit-expense="${e.id}">Edit</button>
+                      <button class="icon-btn icon-btn--danger" data-delete-expense="${e.id}">Delete</button>
+                    </div>
+                  </td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  `;
+};
+
+Views.expensesPost = function() {
+  // GSAP entry animations
+  Animate.heroIn('[data-animate="hero"]');
+  Animate.staggerIn('[data-animate="card"]', { delay: 0.15, stagger: 0.06 });
+  Animate.countUp('.summary-hero__value[data-countup]', { duration: 1.2 });
+  Animate.countUp('.cat-card__value[data-countup]', { duration: 0.9 });
+  Animate.growBars('.cat-card__barFill', { baseDelay: 0.35, stagger: 0.06 });
+
+  const apply = () => App.navigate('expenses', {
+    q: document.getElementById('expenseSearch').value.trim(),
+    type: document.getElementById('expenseTypeFilter').value,
+    sort: App.currentParams?.sort || '',
+    dir:  App.currentParams?.dir  || ''
+  });
+  document.getElementById('expenseSearch').addEventListener('input', debounce(apply, 250));
+  document.getElementById('expenseTypeFilter').addEventListener('change', apply);
+
+  wireSortableHeaders('expenses', {
+    q: document.getElementById('expenseSearch')?.value?.trim() || '',
+    type: document.getElementById('expenseTypeFilter')?.value || '',
+    sort: App.currentParams?.sort,
+    dir:  App.currentParams?.dir
+  });
+
+  document.querySelector('[data-action="export-all-expenses"]')?.addEventListener('click', () => {
+    const items = Store.getExpenses();
+    if (!items.length) return App.toast('No expenses to export');
+    const rows = [
+      ['Date', 'Client', 'Category', 'Description', 'Notes', 'Amount'],
+      ...items.map(e => [
+        e.date || '', e.client || '', e.expenseType || '',
+        e.description || '', e.notes || '', e.amount || 0
+      ])
+    ];
+    downloadCSV(`expenses-all-${new Date().toISOString().slice(0,10)}.csv`, rows);
+    App.toast(`${items.length} expense${items.length === 1 ? '' : 's'} exported`);
+  });
+
+  document.querySelector('[data-action="open-expense-modal"]')?.addEventListener('click', () => App.openExpenseModal());
+  document.querySelectorAll('[data-edit-expense]').forEach(b => {
+    b.addEventListener('click', () => App.openExpenseModal(b.getAttribute('data-edit-expense')));
+  });
+  document.querySelectorAll('[data-delete-expense]').forEach(b => {
+    b.addEventListener('click', () => {
+      const id = b.getAttribute('data-delete-expense');
+      if (confirm('Delete this expense? This cannot be undone.')) {
+        Store.deleteExpense(id);
+        App.toast('Expense removed');
+        App.render();
+      }
+    });
+  });
+
+  BulkSelect.init({
+    scope: 'expenses',
+    itemNoun: 'expense',
+    actions: [
+      {
+        label: 'Export CSV',
+        icon: 'download',
+        onClick: (ids) => {
+          const items = ids.map(id => Store.getExpense(id)).filter(Boolean);
+          const rows = [
+            ['Date', 'Client', 'Category', 'Description', 'Notes', 'Amount'],
+            ...items.map(e => [
+              e.date || '', e.client || '', e.expenseType || '',
+              e.description || '', e.notes || '', e.amount || 0
+            ])
+          ];
+          downloadCSV(`expenses-export-${new Date().toISOString().slice(0,10)}.csv`, rows);
+          App.toast(`${items.length} expense${items.length === 1 ? '' : 's'} exported`);
+        }
+      },
+      {
+        label: 'Delete',
+        icon: 'trash',
+        danger: true,
+        onClick: (ids) => {
+          if (!confirm(`Delete ${ids.length} expense${ids.length === 1 ? '' : 's'}? This cannot be undone.`)) return;
+          const n = Store.deleteExpenses(ids);
+          App.toast(`${n} expense${n === 1 ? '' : 's'} removed`);
+          App.render();
+        }
+      }
+    ]
+  });
+};
+
+/* ========================================================================
+   Monthly Production
+   ======================================================================== */
+
+Views.monthly = function(query = {}) {
+  const years = Store.getYearsInData();
+  const selectedYear = Number(query.year) || years[years.length - 1] || new Date().getFullYear();
+  const rows = Store.getMonthlyProduction(selectedYear);
+
+  const totals = rows.reduce((acc, r) => ({
+    total: acc.total + r.total,
+    purchase: acc.purchase + r.purchase,
+    refinance: acc.refinance + r.refinance,
+    subordinate: acc.subordinate + r.subordinate,
+    revenue: acc.revenue + r.revenue
+  }), { total: 0, purchase: 0, refinance: 0, subordinate: 0, revenue: 0 });
+
+  return `
+    <section class="view">
+      <header class="view-header">
+        <div class="view-header__left">
+          <div class="eyebrow">Monthly Production</div>
+          <h1>The rhythm of <em>the year.</em></h1>
+        </div>
+        <div class="view-header__right">
+          ${years.length > 0 ? `<select id="monthlyYear" class="field__select">${years.map(y => `<option value="${y}" ${y === selectedYear ? 'selected' : ''}>${y}</option>`).join('')}</select>` : ''}
+        </div>
+      </header>
+
+      <div class="panel">
+        <div class="panel__head">
+          <div>
+            <h3 class="panel__title">${icon('monthly', 16)} Revenue &amp; Volume — ${selectedYear}</h3>
+            <div class="panel__subtitle">Month by Month</div>
+          </div>
+        </div>
+        <div class="panel__body">
+          <div class="chart-wrap chart-wrap--tall"><canvas id="monthlyCombo"></canvas></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel__head">
+          <div>
+            <h3 class="panel__title">${icon('data', 16)} Production Table — ${selectedYear}</h3>
+            <div class="panel__subtitle">${totals.total} deals · ${fmtMoney(totals.revenue, { decimals: 0 })} revenue</div>
+          </div>
+        </div>
+        <div class="panel__body panel__body--tight">
+          <div class="table-wrap">
+            <table class="data">
+              <thead><tr>
+                <th>Month</th>
+                <th class="num">Deals</th>
+                <th class="num">Purchase</th>
+                <th class="num">Refinance</th>
+                <th class="num">Subordinate</th>
+                <th class="num">Revenue</th>
+                <th class="num">Avg / Deal</th>
+                <th class="num">MoM Growth</th>
+              </tr></thead>
+              <tbody>
+                ${rows.map(r => `
+                  <tr>
+                    <td class="cell-strong">${r.month}</td>
+                    <td class="num">${fmtNumber(r.total)}</td>
+                    <td class="num">${fmtNumber(r.purchase)}</td>
+                    <td class="num">${fmtNumber(r.refinance)}</td>
+                    <td class="num">${fmtNumber(r.subordinate)}</td>
+                    <td class="num cell-strong">${fmtMoney(r.revenue, { decimals: 0 })}</td>
+                    <td class="num">${r.avgDealSize ? fmtMoney(r.avgDealSize, { decimals: 0 }) : '—'}</td>
+                    <td class="num" style="color: ${r.momGrowth > 0 ? 'var(--forest-mid)' : r.momGrowth < 0 ? '#8B2936' : 'var(--mid-grey)'}">${r.momGrowth !== null ? (r.momGrowth > 0 ? '+' : '') + fmtPercent(r.momGrowth) : '—'}</td>
+                  </tr>
+                `).join('')}
+                <tr style="background: var(--forest-primary); color: var(--off-white);">
+                  <td class="cell-strong" style="color: var(--off-white); font-family: var(--serif); font-size: 16px;">TOTAL</td>
+                  <td class="num" style="color: var(--off-white);">${fmtNumber(totals.total)}</td>
+                  <td class="num" style="color: var(--off-white);">${fmtNumber(totals.purchase)}</td>
+                  <td class="num" style="color: var(--off-white);">${fmtNumber(totals.refinance)}</td>
+                  <td class="num" style="color: var(--off-white);">${fmtNumber(totals.subordinate)}</td>
+                  <td class="num" style="color: var(--off-white); font-family: var(--serif); font-size: 16px;">${fmtMoney(totals.revenue, { decimals: 0 })}</td>
+                  <td class="num" style="color: var(--off-white);">${totals.total > 0 ? fmtMoney(totals.revenue / totals.total, { decimals: 0 }) : '—'}</td>
+                  <td></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+  `;
+};
+
+Views.monthlyPost = function(query = {}) {
+  const years = Store.getYearsInData();
+  const selectedYear = Number(query.year) || years[years.length - 1] || new Date().getFullYear();
+  const rows = Store.getMonthlyProduction(selectedYear);
+
+  document.getElementById('monthlyYear')?.addEventListener('change', e => {
+    App.navigate('monthly', { year: e.target.value });
+  });
+
+  const ctx = document.getElementById('monthlyCombo');
+  if (!ctx) return;
+  if (CHARTS.monthlyCombo) CHARTS.monthlyCombo.destroy();
+  CHARTS.monthlyCombo = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: rows.map(r => r.month),
+      datasets: [
+        { label: 'Purchase', data: rows.map(r => r.purchase), backgroundColor: CHART_COLORS.forestPrimary, stack: 'deals', yAxisID: 'y1', barThickness: 24 },
+        { label: 'Refinance', data: rows.map(r => r.refinance), backgroundColor: CHART_COLORS.gold, stack: 'deals', yAxisID: 'y1', barThickness: 24 },
+        { label: 'Subordinate', data: rows.map(r => r.subordinate), backgroundColor: CHART_COLORS.forestLight, stack: 'deals', yAxisID: 'y1', barThickness: 24 },
+        {
+          type: 'line', label: 'Revenue', data: rows.map(r => r.revenue),
+          borderColor: CHART_COLORS.goldMid, backgroundColor: 'rgba(212, 175, 55, 0.1)',
+          pointBackgroundColor: CHART_COLORS.forestPrimary, pointBorderColor: CHART_COLORS.goldMid,
+          pointRadius: 4, tension: 0.3, yAxisID: 'y2', borderWidth: 2
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: {
+          position: 'bottom',
+          labels: { color: CHART_COLORS.forestPrimary, font: { family: 'Montserrat', size: 11, weight: '600' }, padding: 16, boxWidth: 12, boxHeight: 12 }
+        },
+        tooltip: {
+          backgroundColor: CHART_COLORS.forestDeep,
+          titleColor: CHART_COLORS.goldLight, bodyColor: CHART_COLORS.cream, padding: 12,
+          callbacks: {
+            label: (c) => {
+              if (c.dataset.label === 'Revenue') return `Revenue: ${fmtMoney(c.parsed.y, { decimals: 0 })}`;
+              return `${c.dataset.label}: ${c.parsed.y} ${c.parsed.y === 1 ? 'deal' : 'deals'}`;
+            }
+          }
+        }
+      },
+      scales: {
+        x: { stacked: true, grid: { display: false }, ticks: { color: CHART_COLORS.grey, font: CHART_FONT } },
+        y1: {
+          position: 'left', stacked: true, grid: { color: CHART_COLORS.line },
+          ticks: { color: CHART_COLORS.grey, font: CHART_FONT, stepSize: 1 },
+          title: { display: true, text: 'Deals', color: CHART_COLORS.forestPrimary, font: { family: 'Montserrat', size: 10, weight: '600' } }
+        },
+        y2: {
+          position: 'right', grid: { display: false },
+          ticks: { color: CHART_COLORS.grey, font: CHART_FONT, callback: v => fmtMoney(v, { decimals: 0, abbrev: true }) },
+          title: { display: true, text: 'Revenue', color: CHART_COLORS.forestPrimary, font: { family: 'Montserrat', size: 10, weight: '600' } }
+        }
+      }
+    }
+  });
+};
+
+/* ========================================================================
+   Data & Backup
+   ======================================================================== */
+
+Views.data = function() {
+  const o = Store.getOverview();
+  const lastBackup = localStorage.getItem('ra_last_backup');
+  const fees = Settings.load().fileFees;
+  const dupeGroups = Store.findDuplicateDeals();
+
+  return `
+    <section class="view">
+      <header class="view-header">
+        <div class="view-header__left">
+          <div class="eyebrow">Data Management</div>
+          <h1>Backup &amp; <em>control.</em></h1>
+        </div>
+      </header>
+
+      ${renderDuplicatesPanel(dupeGroups)}
+
+      <div class="grid-2">
+        <div class="panel">
+          <div class="panel__head">
+            <div>
+              <h3 class="panel__title">${icon('data', 16)} Current State</h3>
+              <div class="panel__subtitle">What's in the system</div>
+            </div>
+          </div>
+          <div class="panel__body">
+            <div class="stat-row">
+              <div class="stat-row__label">Deals</div>
+              <div class="stat-row__value">${fmtNumber(o.totalDeals)}</div>
+            </div>
+            <div class="stat-row">
+              <div class="stat-row__label">Realtor clients</div>
+              <div class="stat-row__value">${fmtNumber(o.totalAgents)}</div>
+            </div>
+            <div class="stat-row">
+              <div class="stat-row__label">Expense entries</div>
+              <div class="stat-row__value">${fmtNumber(Store.getExpenses().length)}</div>
+            </div>
+            <div class="stat-row">
+              <div class="stat-row__label">Total revenue tracked</div>
+              <div class="stat-row__value">${fmtMoney(o.totalRevenue, { decimals: 0 })}</div>
+            </div>
+            <div class="stat-row">
+              <div class="stat-row__label">Last backup</div>
+              <div class="stat-row__value" style="font-size: 13px;">${lastBackup ? fmtDate(lastBackup) : '<span class="muted">Never</span>'}</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel__head">
+            <div>
+              <h3 class="panel__title">${icon('download', 16)} Export / Import</h3>
+              <div class="panel__subtitle">Your data, portable</div>
+            </div>
+          </div>
+          <div class="panel__body">
+            <p style="font-size: 13px; color: var(--mid-grey); margin: 0 0 20px;">
+              Export a JSON snapshot of every deal, expense, and derived record. Keep backups or move your data to another device.
+            </p>
+            <div style="display: flex; gap: 12px; flex-wrap: wrap;">
+              <button class="btn btn--primary" id="exportBtn">Download JSON Backup</button>
+              <label class="btn btn--ghost" style="cursor: pointer;">
+                Import JSON
+                <input type="file" id="importFile" accept="application/json" style="display: none;" />
+              </label>
+            </div>
+            <hr class="divider" />
+            <p style="font-size: 13px; color: var(--mid-grey); margin: 0 0 16px;">
+              Reset the database back to the original Excel import (160 deals from the 2026 Production Sheet). Your current data will be discarded.
+            </p>
+            <button class="btn btn--danger" id="resetBtn">Reset to Original Data</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel__head">
+          <div>
+            <h3 class="panel__title">${icon('settings', 18)} File Fee Settings</h3>
+            <div class="panel__subtitle">Adjust the flat fee applied to each transaction type</div>
+          </div>
+        </div>
+        <div class="panel__body">
+          <p style="font-size: 13px; color: var(--mid-grey); margin: 0 0 24px; max-width: 640px;">
+            Every deal's revenue is computed as <strong>Settlement + Lender's Policy + Owner's Policy − File Fee</strong>.
+            Change the File Fee below and all existing deals will recalculate automatically.
+          </p>
+          <form id="feeForm" class="form-grid" style="max-width: 600px;">
+            <div class="field">
+              <label class="field__label">Purchase File Fee</label>
+              <div class="field__money">
+                <span class="field__money-prefix">$</span>
+                <input class="field__input" type="number" step="0.01" min="0" name="purchase" value="${fees['Purchase']}" required />
+              </div>
+              <span class="field__hint">Default: $1,555.88</span>
+            </div>
+            <div class="field">
+              <label class="field__label">Refinance File Fee</label>
+              <div class="field__money">
+                <span class="field__money-prefix">$</span>
+                <input class="field__input" type="number" step="0.01" min="0" name="refinance" value="${fees['Refinance']}" required />
+              </div>
+              <span class="field__hint">Default: $777.94</span>
+            </div>
+            <div class="field">
+              <label class="field__label">Subordinate Order File Fee</label>
+              <div class="field__money">
+                <span class="field__money-prefix">$</span>
+                <input class="field__input" type="number" step="0.01" min="0" name="subordinate" value="${fees['Subordinate Order']}" required />
+              </div>
+              <span class="field__hint">Default: $0.00</span>
+            </div>
+            <div class="field field--full" style="display: flex; gap: 12px; align-items: center;">
+              <button type="submit" class="btn btn--gold">${icon('check', 14)} Save & Recalculate</button>
+              <button type="button" class="btn btn--ghost" id="resetFeesBtn">Restore Defaults</button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel__head">
+          <div>
+            <h3 class="panel__title">${icon('check', 16)} About This System</h3>
+            <div class="panel__subtitle">Production CRM v1.0</div>
+          </div>
+        </div>
+        <div class="panel__body">
+          <p style="font-size: 13px; line-height: 1.9; color: var(--charcoal); max-width: 720px;">
+            This Production CRM replaces the 2026 Production Sheet Excel workbook. Every calculation — file fees by transaction type, revenue derivation, realtor aggregation, ROI, and monthly production — mirrors the spreadsheet's logic exactly, so the numbers you see here are identical to the workbook (with no stale hardcoded cells).
+          </p>
+          <p style="font-size: 13px; line-height: 1.9; color: var(--charcoal); max-width: 720px;">
+            Data is stored locally in your browser. It never leaves your machine. For safety, download a backup whenever you've made significant updates.
+          </p>
+        </div>
+      </div>
+    </section>
+  `;
+};
+
+/** Renders the Duplicate Deals panel. Empty string when none found. */
+function renderDuplicatesPanel(groups) {
+  if (!groups.length) {
+    return `
+      <div class="panel panel--ok" data-animate="hero">
+        <div class="panel__body panel__body--ok">
+          <div class="ok-panel">
+            <div class="ok-panel__badge">${icon('check', 18)}</div>
+            <div>
+              <div class="ok-panel__title">No duplicate deals detected</div>
+              <div class="ok-panel__sub">All deals have unique order numbers, or unique date + address combinations.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  const totalDupes = groups.reduce((s, g) => s + g.deals.length, 0);
+
+  return `
+    <div class="panel panel--warn" data-animate="hero">
+      <div class="panel__head panel__head--warn">
+        <div>
+          <h3 class="panel__title">⚠ Duplicate Deals Detected</h3>
+          <div class="panel__subtitle">
+            ${groups.length} group${groups.length === 1 ? '' : 's'} · ${totalDupes} total deal${totalDupes === 1 ? '' : 's'} flagged
+            — review each pair and choose what to keep
+          </div>
+        </div>
+      </div>
+      <div class="panel__body">
+        ${groups.map((g, idx) => renderDuplicateGroup(g, idx)).join('')}
+      </div>
+    </div>
+  `;
+}
+
+function renderDuplicateGroup(group, idx) {
+  const deals = group.deals.slice().sort((a, b) => {
+    // Deals with more filled fields go first so "Keep" defaults to the richest record
+    const fillA = Object.values(a).filter(v => v !== '' && v !== 0 && v != null).length;
+    const fillB = Object.values(b).filter(v => v !== '' && v !== 0 && v != null).length;
+    return fillB - fillA;
+  });
+  const headerLabel = group.matchType === 'order'
+    ? `Order # <strong>${escapeHtml(deals[0].orderNumber || '—')}</strong>`
+    : `Same date + address: <strong>${escapeHtml(deals[0].propertyAddress || '—')}</strong> · ${fmtDate(deals[0].disbursementDate)}`;
+
+  return `
+    <div class="dup-group" data-group-idx="${idx}">
+      <div class="dup-group__head">
+        <div class="dup-group__count">${deals.length}</div>
+        <div class="dup-group__label">${headerLabel}</div>
+      </div>
+      <div class="dup-cards">
+        ${deals.map((d, i) => renderDuplicateCard(d, i === 0, deals)).join('')}
+      </div>
+    </div>
+  `;
+}
+
+function renderDuplicateCard(deal, isRecommended, siblings) {
+  const otherIds = siblings.filter(s => s.id !== deal.id).map(s => s.id);
+  return `
+    <div class="dup-card ${isRecommended ? 'dup-card--recommended' : ''}" data-deal-id="${deal.id}">
+      ${isRecommended ? '<div class="dup-card__badge">Most complete</div>' : ''}
+      <div class="dup-card__head">
+        <div class="dup-card__order">${escapeHtml(deal.orderNumber || '—')}</div>
+        <div class="dup-card__type">${dealTypeTag(deal.transactionType)}</div>
+      </div>
+      <div class="dup-card__meta">
+        <div class="dup-meta-row"><span class="dup-meta__label">Disbursement</span><span class="dup-meta__value">${fmtDate(deal.disbursementDate) || '—'}</span></div>
+        <div class="dup-meta-row"><span class="dup-meta__label">Property</span><span class="dup-meta__value">${escapeHtml(deal.propertyAddress || '—')}</span></div>
+        <div class="dup-meta-row"><span class="dup-meta__label">Underwriter</span><span class="dup-meta__value">${escapeHtml(deal.underwriter || '—')}</span></div>
+        <div class="dup-meta-row"><span class="dup-meta__label">Client</span><span class="dup-meta__value">${escapeHtml(deal.client || '—')}</span></div>
+        <div class="dup-meta-row"><span class="dup-meta__label">Revenue</span><span class="dup-meta__value cell-strong">${fmtMoney(deal.revenue, { decimals: 0 })}</span></div>
+      </div>
+      <div class="dup-card__actions">
+        <button class="btn btn--gold dup-btn" data-dup-action="keep" data-keep-id="${deal.id}" data-drop-ids="${otherIds.join(',')}">Keep This · Delete Other${otherIds.length > 1 ? 's' : ''}</button>
+        <button class="btn btn--ghost dup-btn" data-dup-action="merge" data-keep-id="${deal.id}" data-drop-ids="${otherIds.join(',')}" ${otherIds.length > 1 ? '' : ''}>Merge Into This</button>
+        <button class="btn btn--danger-ghost dup-btn" data-dup-action="delete" data-delete-id="${deal.id}">Delete This</button>
+      </div>
+    </div>
+  `;
+}
+
+Views.dataPost = function() {
+  // Animate duplicate panel in (if present)
+  Animate.heroIn('[data-animate="hero"]');
+
+  // Wire duplicate actions
+  document.querySelectorAll('[data-dup-action]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const action = btn.getAttribute('data-dup-action');
+      if (action === 'delete') {
+        const id = btn.getAttribute('data-delete-id');
+        const d = Store.getDeal(id);
+        if (!d) return;
+        if (!confirm(`Delete duplicate deal ${d.orderNumber || d.propertyAddress || id}? This cannot be undone.`)) return;
+        Store.deleteDeal(id);
+        App.toast('Duplicate removed');
+        App.render();
+        return;
+      }
+      if (action === 'keep') {
+        const keepId = btn.getAttribute('data-keep-id');
+        const dropIds = (btn.getAttribute('data-drop-ids') || '').split(',').filter(Boolean);
+        const keep = Store.getDeal(keepId);
+        if (!confirm(`Keep deal ${keep?.orderNumber || ''} and delete ${dropIds.length} duplicate${dropIds.length === 1 ? '' : 's'}? This cannot be undone.`)) return;
+        Store.deleteDeals(dropIds);
+        App.toast(`${dropIds.length} duplicate${dropIds.length === 1 ? '' : 's'} removed`);
+        App.render();
+        return;
+      }
+      if (action === 'merge') {
+        const keepId = btn.getAttribute('data-keep-id');
+        const dropIds = (btn.getAttribute('data-drop-ids') || '').split(',').filter(Boolean);
+        const keep = Store.getDeal(keepId);
+        if (!confirm(`Merge ${dropIds.length} duplicate${dropIds.length === 1 ? '' : 's'} into deal ${keep?.orderNumber || ''}? Empty fields on the kept deal will be filled from the others, then the others will be deleted.`)) return;
+        dropIds.forEach(dropId => Store.mergeDeals(keepId, dropId));
+        App.toast(`${dropIds.length} duplicate${dropIds.length === 1 ? '' : 's'} merged`);
+        App.render();
+        return;
+      }
+    });
+  });
+
+  document.getElementById('exportBtn')?.addEventListener('click', () => {
+    const payload = { exportedAt: new Date().toISOString(), deals: Store.getDeals(), expenses: Store.getExpenses() };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `real-achiever-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    localStorage.setItem('ra_last_backup', new Date().toISOString());
+    App.toast('Backup downloaded');
+    App.render();
+  });
+
+  document.getElementById('importFile')?.addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const parsed = JSON.parse(ev.target.result);
+        if (!Array.isArray(parsed.deals) || !Array.isArray(parsed.expenses)) throw new Error('Invalid file format');
+        if (!confirm(`Import ${parsed.deals.length} deals and ${parsed.expenses.length} expenses? This will replace your current data.`)) return;
+        Store.state = { deals: parsed.deals, expenses: parsed.expenses };
+        Store._save();
+        App.toast('Data imported');
+        App.render();
+      } catch (err) {
+        alert('Could not import file: ' + err.message);
+      }
+    };
+    reader.readAsText(file);
+  });
+
+  document.getElementById('resetBtn')?.addEventListener('click', () => {
+    if (!confirm('Reset to the original Excel data? All current entries will be replaced.')) return;
+    Store.reseed();
+    App.toast('Data reset to original');
+    App.render();
+  });
+
+  document.getElementById('feeForm')?.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    Settings.save({
+      fileFees: {
+        'Purchase': Number(fd.get('purchase') || 0),
+        'Refinance': Number(fd.get('refinance') || 0),
+        'Subordinate Order': Number(fd.get('subordinate') || 0)
+      }
+    });
+    const changed = Store.recomputeAllDeals();
+    App.toast(`File fees saved · ${changed} deal${changed === 1 ? '' : 's'} recalculated`);
+    App.render();
+  });
+
+  document.getElementById('resetFeesBtn')?.addEventListener('click', () => {
+    if (!confirm('Restore the original Excel defaults for all three file fees?')) return;
+    Settings.resetFileFees();
+    const changed = Store.recomputeAllDeals();
+    App.toast(`File fees restored · ${changed} deal${changed === 1 ? '' : 's'} recalculated`);
+    App.render();
+  });
+};
+
+/* ========================================================================
+   Modal · Import wizard (Step 1: Upload)
+   ======================================================================== */
+
+function importStep1HTML() {
+  return `
+    <div class="modal__head">
+      <div class="modal__subtitle">Bulk Import</div>
+      <h2 class="modal__title">Upload Deals</h2>
+      <p class="modal__lede">Drop a CSV or Excel file of deals. We'll auto-detect columns, show you a preview, and let you confirm before anything is saved.</p>
+    </div>
+
+    <div class="import-dropzone" id="importDropzone">
+      <input type="file" id="importPickFile" accept=".csv,.xlsx,.xls" hidden />
+      <div class="import-dropzone__icon">⤒</div>
+      <div class="import-dropzone__title">Drop your file here</div>
+      <div class="import-dropzone__hint">or <button type="button" class="import-dropzone__browse" id="importBrowseBtn">browse</button> — accepts .csv, .xlsx, .xls</div>
+    </div>
+
+    <div class="import-steps">
+      <div class="import-step is-active"><span>1</span> Upload</div>
+      <div class="import-step"><span>2</span> Map Columns</div>
+      <div class="import-step"><span>3</span> Review</div>
+    </div>
+
+    <div class="modal__actions">
+      <div></div>
+      <div class="modal__actions-right">
+        <button type="button" class="btn btn--ghost" data-close-modal>Cancel</button>
+      </div>
+    </div>
+  `;
+}
+
+function importStep2HTML(state) {
+  const { headers, rows, mapping } = state;
+  const previewRows = rows.slice(0, 3);
+  const options = Import.FIELDS.map(f =>
+    `<option value="${f.key}">${escapeHtml(f.label)}</option>`
+  ).join('');
+
+  return `
+    <div class="modal__head">
+      <div class="modal__subtitle">Bulk Import · Step 2 of 3</div>
+      <h2 class="modal__title">Map Your Columns</h2>
+      <p class="modal__lede">We matched these automatically — adjust anything that looks off. <strong>${headers.length}</strong> columns · <strong>${rows.length}</strong> rows detected.</p>
+    </div>
+
+    <div class="import-steps">
+      <div class="import-step is-done"><span>✓</span> Upload</div>
+      <div class="import-step is-active"><span>2</span> Map Columns</div>
+      <div class="import-step"><span>3</span> Review</div>
+    </div>
+
+    <div class="import-map-wrap">
+      <table class="import-map">
+        <thead>
+          <tr>
+            <th style="width: 28%">Your column</th>
+            <th style="width: 28%">Maps to</th>
+            <th>Preview values</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${headers.map((h, i) => {
+            const samples = previewRows.map(r => r[i]).filter(v => v !== undefined && String(v).trim() !== '').slice(0, 3);
+            const sampleText = samples.length ? samples.map(s => escapeHtml(String(s))).join('<span class="import-map__sep"> · </span>') : '<span class="muted">—</span>';
+            const selected = mapping[i] || '';
+            return `
+              <tr>
+                <td><div class="import-map__colname">${escapeHtml(h || `Column ${i + 1}`)}</div></td>
+                <td>
+                  <select class="field__select import-map__select" data-col-idx="${i}">
+                    ${Import.FIELDS.map(f =>
+                      `<option value="${f.key}" ${f.key === selected ? 'selected' : ''}>${escapeHtml(f.label)}</option>`
+                    ).join('')}
+                  </select>
+                </td>
+                <td class="import-map__preview">${sampleText}</td>
+              </tr>
+            `;
+          }).join('')}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="import-options">
+      <div class="import-options__label">When both listing & selling agents are present, credit the deal to:</div>
+      <div class="import-options__choices">
+        <label class="radio"><input type="radio" name="clientStrategy" value="listingFirst" checked /> <span>Listing Agent</span></label>
+        <label class="radio"><input type="radio" name="clientStrategy" value="sellingFirst" /> <span>Selling Agent</span></label>
+      </div>
+      <div class="import-options__hint">Either role can be the client. An explicit "Client" column, if mapped, always wins.</div>
+    </div>
+
+    <div class="modal__actions">
+      <div><button type="button" class="btn btn--ghost" id="importBackTo1">← Back</button></div>
+      <div class="modal__actions-right">
+        <button type="button" class="btn btn--ghost" data-close-modal>Cancel</button>
+        <button type="button" class="btn btn--gold" id="importToStep3">Preview Import →</button>
+      </div>
+    </div>
+  `;
+}
+
+function importStep3HTML(state, summary) {
+  const { validated } = state;
+  const invalidRows = validated.filter(v => v.errors.length);
+
+  return `
+    <div class="modal__head">
+      <div class="modal__subtitle">Bulk Import · Step 3 of 3</div>
+      <h2 class="modal__title">Review & Confirm</h2>
+      <p class="modal__lede">Here's what will happen when you commit. No changes have been made yet.</p>
+    </div>
+
+    <div class="import-steps">
+      <div class="import-step is-done"><span>✓</span> Upload</div>
+      <div class="import-step is-done"><span>✓</span> Map Columns</div>
+      <div class="import-step is-active"><span>3</span> Review</div>
+    </div>
+
+    <div class="import-summary">
+      <div class="import-summary__item">
+        <div class="import-summary__value">${summary.valid}</div>
+        <div class="import-summary__label">Deals ready</div>
+      </div>
+      <div class="import-summary__item">
+        <div class="import-summary__value ${summary.duplicates.length ? 'is-warn' : ''}">${summary.duplicates.length}</div>
+        <div class="import-summary__label">Duplicates</div>
+      </div>
+      <div class="import-summary__item">
+        <div class="import-summary__value is-new">${summary.newRealtors.length}</div>
+        <div class="import-summary__label">New realtors</div>
+      </div>
+      <div class="import-summary__item">
+        <div class="import-summary__value">${summary.matchedRealtors.length}</div>
+        <div class="import-summary__label">Matched in DB</div>
+      </div>
+    </div>
+
+    ${summary.duplicates.length ? `
+      <div class="import-pane import-pane--warn">
+        <div class="import-pane__title">${summary.duplicates.length} order number${summary.duplicates.length === 1 ? '' : 's'} already exist</div>
+        <div class="import-options__choices" style="margin-top: 6px; margin-bottom: 10px;">
+          <label class="radio"><input type="radio" name="duplicateMode" value="skip" checked /> <span>Skip duplicates</span></label>
+          <label class="radio"><input type="radio" name="duplicateMode" value="update" /> <span>Update existing</span></label>
+          <label class="radio"><input type="radio" name="duplicateMode" value="add" /> <span>Import anyway (create duplicates)</span></label>
+        </div>
+        <div class="import-chips">
+          ${summary.duplicates.slice(0, 20).map(o => `<span class="chip chip--new">${escapeHtml(o)}</span>`).join('')}
+          ${summary.duplicates.length > 20 ? `<span class="chip chip--muted">+${summary.duplicates.length - 20} more</span>` : ''}
+        </div>
+      </div>
+    ` : ''}
+
+    ${summary.newRealtors.length ? `
+      <div class="import-pane">
+        <div class="import-pane__title">New realtors — profiles will be auto-created</div>
+        <div class="import-chips">
+          ${summary.newRealtors.map(n => `<span class="chip chip--new">${escapeHtml(n)}</span>`).join('')}
+        </div>
+      </div>
+    ` : ''}
+
+    ${summary.matchedRealtors.length ? `
+      <div class="import-pane">
+        <div class="import-pane__title">Matched to existing realtors</div>
+        <div class="import-chips">
+          ${summary.matchedRealtors.slice(0, 40).map(n => `<span class="chip chip--match">${escapeHtml(n)}</span>`).join('')}
+          ${summary.matchedRealtors.length > 40 ? `<span class="chip chip--muted">+${summary.matchedRealtors.length - 40} more</span>` : ''}
+        </div>
+      </div>
+    ` : ''}
+
+    ${invalidRows.length ? `
+      <div class="import-pane import-pane--warn">
+        <div class="import-pane__title">${invalidRows.length} row${invalidRows.length === 1 ? '' : 's'} with issues</div>
+        <div class="import-pane__body">
+          <div class="import-issues">
+            ${invalidRows.slice(0, 8).map(v => `
+              <div class="import-issue">
+                <div class="import-issue__row">Row ${v.rowIndex + 2}${v.deal.orderNumber ? ` · ${escapeHtml(v.deal.orderNumber)}` : ''}</div>
+                <div class="import-issue__err">${v.errors.join(', ')}</div>
+              </div>
+            `).join('')}
+            ${invalidRows.length > 8 ? `<div class="muted" style="padding: 8px 0;">…and ${invalidRows.length - 8} more</div>` : ''}
+          </div>
+          <label class="import-skip">
+            <input type="checkbox" id="importSkipInvalid" checked />
+            <span>Skip rows with issues (recommended). Uncheck to import them anyway — missing fields will be empty.</span>
+          </label>
+        </div>
+      </div>
+    ` : ''}
+
+    <div class="modal__actions">
+      <div><button type="button" class="btn btn--ghost" id="importBackTo2">← Back to mapping</button></div>
+      <div class="modal__actions-right">
+        <button type="button" class="btn btn--ghost" data-close-modal>Cancel</button>
+        <button type="button" class="btn btn--gold" id="importCommit">
+          Import ${summary.valid} deal${summary.valid === 1 ? '' : 's'}
+        </button>
+      </div>
+    </div>
+  `;
+}
+
+/* ========================================================================
+   Modal · Deal form
+   ======================================================================== */
+
+function dealModalHTML(deal, prefill = {}) {
+  const d = deal || { transactionType: 'Purchase', ...prefill };
+  const title = deal ? 'Edit Deal' : 'New Deal';
+  const attr = d.clientAttribution || '';
+  return `
+    <div class="modal__head">
+      <div class="modal__subtitle">Transaction</div>
+      <h2 class="modal__title">${title}</h2>
+    </div>
+    <form id="dealForm">
+      <input type="hidden" name="id" value="${deal ? deal.id : ''}" />
+
+      <!-- Section: Identity -->
+      <div class="form-section-title">${icon('deals', 14)} Deal Identity</div>
+      <div class="form-grid">
+        <div class="field">
+          <label class="field__label">Order Number</label>
+          <input class="field__input" name="orderNumber" value="${escapeHtml(d.orderNumber || '')}" placeholder="VA-25-XXX" required />
+        </div>
+        <div class="field">
+          <label class="field__label">Transaction Type</label>
+          <select class="field__select" name="transactionType" id="txType">
+            ${TRANSACTION_TYPES.map(t => `<option value="${t}" ${t === d.transactionType ? 'selected' : ''}>${t}</option>`).join('')}
+          </select>
+        </div>
+
+        <div class="field">
+          <label class="field__label">Closing Date</label>
+          <input class="field__input" type="date" name="closingDate" value="${escapeHtml(d.closingDate || '')}" />
+          <span class="field__hint">When the transaction closed</span>
+        </div>
+        <div class="field">
+          <label class="field__label">Disbursement Date</label>
+          <input class="field__input" type="date" name="disbursementDate" value="${escapeHtml(d.disbursementDate || '')}" required />
+          <span class="field__hint">When funds were released</span>
+        </div>
+
+        <div class="field field--full">
+          <label class="field__label">Property Address</label>
+          <input class="field__input" name="propertyAddress" value="${escapeHtml(d.propertyAddress || '')}" placeholder="123 Main St, City, ST 00000" />
+        </div>
+
+        <div class="field field--full">
+          <label class="field__label">Underwriter</label>
+          <input class="field__input" name="underwriter" value="${escapeHtml(d.underwriter || '')}" placeholder="e.g. First American Title, Stewart Title" />
+        </div>
+      </div>
+
+      <!-- Section: Parties -->
+      <div class="form-section-title">${icon('agents', 14)} Parties</div>
+      <div class="form-grid">
+        <div class="field">
+          <label class="field__label">Listing Agent</label>
+          <input class="field__input" id="listingAgentInput" name="listingAgent" value="${escapeHtml(d.listingAgent || '')}" list="agentList" placeholder="Full name" />
+        </div>
+        <div class="field">
+          <label class="field__label">Listing Broker</label>
+          <input class="field__input" name="listingBroker" value="${escapeHtml(d.listingBroker || '')}" placeholder="Brokerage firm" />
+        </div>
+
+        <div class="field">
+          <label class="field__label">Selling Agent</label>
+          <input class="field__input" id="sellingAgentInput" name="sellingAgent" value="${escapeHtml(d.sellingAgent || '')}" list="agentList" placeholder="Full name" />
+        </div>
+        <div class="field">
+          <label class="field__label">Selling Broker</label>
+          <input class="field__input" name="sellingBroker" value="${escapeHtml(d.sellingBroker || '')}" placeholder="Brokerage firm" />
+        </div>
+      </div>
+
+      <!-- Section: Client picker -->
+      <div class="form-section-title">${icon('check', 14)} Who's Our Client?</div>
+      <div class="client-picker" id="clientPicker">
+        <div class="client-picker__chips">
+          <button type="button" class="client-chip ${attr === 'Listing Agent' ? 'is-active' : ''}" data-client-pick="listing">
+            <div class="client-chip__role">Listing Agent</div>
+            <div class="client-chip__name" id="chipNameListing">${escapeHtml(d.listingAgent || '—')}</div>
+          </button>
+          <button type="button" class="client-chip ${attr === 'Selling Agent' ? 'is-active' : ''}" data-client-pick="selling">
+            <div class="client-chip__role">Selling Agent</div>
+            <div class="client-chip__name" id="chipNameSelling">${escapeHtml(d.sellingAgent || '—')}</div>
+          </button>
+          <button type="button" class="client-chip ${attr === 'Both' ? 'is-active' : ''}" data-client-pick="both">
+            <div class="client-chip__role">Both Sides</div>
+            <div class="client-chip__name">One agent represented both</div>
+          </button>
+          <button type="button" class="client-chip ${attr === 'Direct' ? 'is-active' : ''}" data-client-pick="direct">
+            <div class="client-chip__role">Direct</div>
+            <div class="client-chip__name">No agent involved</div>
+          </button>
+        </div>
+        <div class="client-picker__selected">
+          <div class="field">
+            <label class="field__label">Credited Client Name</label>
+            <input class="field__input" name="client" id="clientInput" value="${escapeHtml(d.client || '')}" list="agentList" placeholder="Type a name — new realtors are added automatically" />
+            <span class="field__hint">Tip: click a chip above to auto-fill; or type a name to add a new realtor.</span>
+          </div>
+          <input type="hidden" name="clientAttribution" id="clientAttribution" value="${escapeHtml(attr)}" />
+        </div>
+      </div>
+
+      <!-- Section: Money -->
+      <div class="form-section-title">${icon('expenses', 14)} Revenue</div>
+      <div class="form-grid">
+        <div class="field">
+          <label class="field__label">Settlement Fee</label>
+          <input class="field__input" type="number" step="0.01" name="settlementFee" value="${d.settlementFee || ''}" />
+        </div>
+        <div class="field">
+          <label class="field__label">Lender's Policy</label>
+          <input class="field__input" type="number" step="0.01" name="lendersPolicy" value="${d.lendersPolicy || ''}" />
+        </div>
+
+        <div class="field">
+          <label class="field__label">Owner's Policy</label>
+          <input class="field__input" type="number" step="0.01" name="ownersPolicy" value="${d.ownersPolicy || ''}" />
+        </div>
+        <div class="field">
+          <label class="field__label">File Fee (Auto)</label>
+          <input class="field__input field__input--calc" id="fileFeePreview" value="${fmtMoney(computeFileFee(d.transactionType || 'Purchase'))}" readonly />
+          <span class="field__hint">Set in Data &amp; Backup → File Fee Settings</span>
+        </div>
+
+        <div class="field field--full">
+          <label class="field__label">Revenue (Auto)</label>
+          <input class="field__input field__input--calc" id="revenuePreview" readonly value="${fmtMoney(d.revenue || 0)}" />
+          <span class="field__hint">Settle + Lender + Owner − File Fee</span>
+        </div>
+      </div>
+
+      <datalist id="agentList">
+        ${Store.getAgents().map(a => `<option value="${escapeHtml(a.name)}"></option>`).join('')}
+      </datalist>
+
+      <div class="modal__actions">
+        <div>
+          ${deal ? `<button type="button" class="btn btn--danger" id="deleteDealFromModal">Delete Deal</button>` : ''}
+        </div>
+        <div class="modal__actions-right">
+          <button type="button" class="btn btn--ghost" data-close-modal>Cancel</button>
+          <button type="submit" class="btn btn--gold">${deal ? 'Save Changes' : 'Create Deal'}</button>
+        </div>
+      </div>
+    </form>
+  `;
+}
+
+/* ========================================================================
+   Modal · Expense form
+   ======================================================================== */
+
+function expenseModalHTML(expense, prefill = {}) {
+  const e = expense || { date: new Date().toISOString().slice(0, 10), ...prefill };
+  const title = expense ? 'Edit Expense' : 'New Expense';
+  return `
+    <div class="modal__head">
+      <div class="modal__subtitle">Client Investment</div>
+      <h2 class="modal__title">${title}</h2>
+    </div>
+    <form id="expenseForm">
+      <input type="hidden" name="id" value="${expense ? expense.id : ''}" />
+
+      <div class="form-grid">
+        <div class="field">
+          <label class="field__label">Date</label>
+          <input class="field__input" type="date" name="date" value="${escapeHtml(e.date || '')}" required />
+        </div>
+        <div class="field">
+          <label class="field__label">Category</label>
+          <select class="field__select" name="expenseType" required>
+            ${EXPENSE_TYPES.map(t => `<option value="${t}" ${t === e.expenseType ? 'selected' : ''}>${t}</option>`).join('')}
+          </select>
+        </div>
+
+        <div class="field field--full">
+          <label class="field__label">Client</label>
+          <div class="combobox" data-combobox>
+            <input class="field__input combobox__input" type="text" name="client" autocomplete="off" value="${escapeHtml(e.client || '')}" placeholder="Start typing a name, or pick from the list" required />
+            <button type="button" class="combobox__toggle" aria-label="Open dropdown">▾</button>
+            <div class="combobox__panel" hidden>
+              ${Store.getAgents().map(a => `<button type="button" class="combobox__option" data-value="${escapeHtml(a.name)}">${escapeHtml(a.name)}</button>`).join('') || '<div class="combobox__empty">No realtors yet — type to create one.</div>'}
+            </div>
+          </div>
+          <div class="field__hint">Not in the list? Just type a new name — the realtor will be created automatically.</div>
+        </div>
+
+        <div class="field field--full">
+          <label class="field__label">Description</label>
+          <input class="field__input" name="description" value="${escapeHtml(e.description || '')}" placeholder="e.g. Holiday gift, Birthday lunch, Sponsored event" />
+        </div>
+
+        <div class="field">
+          <label class="field__label">Amount</label>
+          <input class="field__input" type="number" step="0.01" name="amount" value="${e.amount || ''}" required />
+        </div>
+        <div class="field">
+          <label class="field__label">Notes</label>
+          <input class="field__input" name="notes" value="${escapeHtml(e.notes || '')}" />
+        </div>
+      </div>
+
+      <div class="modal__actions">
+        <div>
+          ${expense ? `<button type="button" class="btn btn--danger" id="deleteExpenseFromModal">Delete</button>` : ''}
+        </div>
+        <div class="modal__actions-right">
+          <button type="button" class="btn btn--ghost" data-close-modal>Cancel</button>
+          <button type="submit" class="btn btn--gold">${expense ? 'Save Changes' : 'Create Expense'}</button>
+        </div>
+      </div>
+    </form>
+  `;
+}
+
+/* ========================================================================
+   Goals modal HTML
+   ======================================================================== */
+
+function goalsModalHTML(year, existing = {}) {
+  const isEdit = Object.keys(existing).length > 0;
+  const thisYear = new Date().getFullYear();
+  const yearOptions = [];
+  for (let y = thisYear - 1; y <= thisYear + 3; y++) {
+    yearOptions.push(`<option value="${y}" ${Number(year) === y ? 'selected' : ''}>${y}</option>`);
+  }
+  return `
+    <form id="goalsForm" class="modal__form">
+      <header class="modal__header">
+        <div>
+          <div class="modal__eyebrow">Strategy</div>
+          <h2 class="modal__title">${isEdit ? `Edit ${year} Goals` : `Set ${year} Goals`}</h2>
+        </div>
+        <button type="button" class="modal__close" data-close-modal aria-label="Close">${icon('close', 18)}</button>
+      </header>
+      <div class="modal__body">
+        <div class="form-section-title">${icon('settings', 12)} Target Year</div>
+        <div class="field">
+          <label class="field__label">Year</label>
+          <select class="field__input" name="year">${yearOptions.join('')}</select>
+        </div>
+
+        <div class="form-section-title">${icon('monthly', 12)} Yearly Targets</div>
+        <div class="grid-2">
+          <div class="field">
+            <label class="field__label">Revenue Goal ($)</label>
+            <input class="field__input" type="number" name="revenue" min="0" step="100" value="${existing.revenue || ''}" placeholder="e.g. 500000" required />
+          </div>
+          <div class="field">
+            <label class="field__label">Deals Goal (count)</label>
+            <input class="field__input" type="number" name="deals" min="0" step="1" value="${existing.deals || ''}" placeholder="e.g. 120" required />
+          </div>
+          <div class="field">
+            <label class="field__label">Active Realtors Goal (count)</label>
+            <input class="field__input" type="number" name="activeRealtors" min="0" step="1" value="${existing.activeRealtors || ''}" placeholder="e.g. 40" required />
+            <div class="field__hint">Distinct realtors who brought you deals this year.</div>
+          </div>
+          <div class="field">
+            <label class="field__label">Avg Revenue / Deal <span class="muted">(optional)</span></label>
+            <input class="field__input" type="number" name="avgDealRevenue" min="0" step="50" value="${existing.avgDealRevenue || ''}" placeholder="e.g. 4100" />
+            <div class="field__hint">Used as a benchmark. Auto-derived if blank.</div>
+          </div>
+          <div class="field">
+            <label class="field__label">Expense Budget <span class="muted">(optional)</span></label>
+            <input class="field__input" type="number" name="expenseBudget" min="0" step="100" value="${existing.expenseBudget || ''}" placeholder="e.g. 25000" />
+          </div>
+        </div>
+      </div>
+      <div class="modal__actions">
+        <div class="modal__actions-left">
+          ${isEdit ? `<button type="button" class="btn btn--danger-ghost" id="deleteGoalsFromModal">${icon('trash', 14)} Remove Goals</button>` : ''}
+        </div>
+        <div class="modal__actions-right">
+          <button type="button" class="btn btn--ghost" data-close-modal>Cancel</button>
+          <button type="submit" class="btn btn--gold">${isEdit ? 'Save Changes' : 'Set Goals'}</button>
+        </div>
+      </div>
+    </form>
+  `;
+}
+
+/* ========================================================================
+   Goals & Predictions view
+   ======================================================================== */
+
+Views.goals = function(query = {}) {
+  const today = new Date();
+  const year = Number(query.year || today.getFullYear());
+  const horizon = query.horizon || '1y';
+  const goal = Goals.get(year);
+  const monthlyStats = Store.getMonthlyStats();
+  const metrics = goal ? computeTrackerMetrics(year, goal, today) : null;
+  const availableYears = Array.from(new Set([...Goals.years(), year, today.getFullYear(), today.getFullYear() + 1])).sort();
+
+  const horizonMap = { '1m': 1, '6m': 6, '1y': 12, '5y': 60 };
+  const horizonMonths = horizonMap[horizon] || 12;
+  const predictions = computePredictions(horizonMonths, monthlyStats);
+
+  // Mini line: a label of the year chips
+  const yearChips = availableYears.map(y =>
+    `<button type="button" class="year-chip ${y === year ? 'is-active' : ''}" data-year="${y}">${y}</button>`
+  ).join('');
+
+  const horizonTabs = [
+    { key: '1m', label: '1 Month', months: 1 },
+    { key: '6m', label: '6 Months', months: 6 },
+    { key: '1y', label: '1 Year', months: 12 },
+    { key: '5y', label: '5 Years', months: 60 }
+  ].map(h =>
+    `<button type="button" class="horizon-tab ${horizon === h.key ? 'is-active' : ''}" data-horizon="${h.key}">${h.label}</button>`
+  ).join('');
+
+  // --- Goal tracker (top panel) HTML ---
+  const trackerHTML = !goal ? `
+    <div class="empty-state">
+      <div class="empty-state__eyebrow">No ${year} goals set</div>
+      <h3 class="empty-state__title">Set your ${year} targets to start tracking.</h3>
+      <p class="empty-state__body">Input a revenue goal, deal count, and realtor target. We'll calculate your pace, projection, and what you need to do each month to hit them.</p>
+      <button class="btn btn--gold" data-action="open-goals-modal">Set ${year} Goals</button>
+    </div>
+  ` : `
+    <div class="goal-tracker">
+      <div class="goal-tracker__hero">
+        <div class="status-badge status-badge--${metrics.statusTone}">${metrics.status}</div>
+        <div class="goal-tracker__narrative">
+          ${metricsNarrative(goal, metrics)}
+        </div>
+      </div>
+
+      <div class="goal-grid">
+        ${goalCard('Revenue', fmtMoney(metrics.ytdRevenue, { decimals: 0 }), fmtMoney(goal.revenue, { decimals: 0 }), metrics.revenuePct, metrics.expectedPacePct)}
+        ${goalCard('Deals', fmtNumber(metrics.ytdDealCount), fmtNumber(goal.deals), metrics.dealsPct, metrics.expectedPacePct)}
+        ${goalCard('Realtors', fmtNumber(metrics.ytdRealtorCount), fmtNumber(goal.activeRealtors), metrics.realtorsPct, metrics.expectedPacePct)}
+      </div>
+
+      <div class="pace-compare">
+        <div class="pace-compare__title">Current vs. Needed Pace</div>
+        <table class="pace-table">
+          <thead><tr>
+            <th></th>
+            <th class="num">Current (last 3mo)</th>
+            <th class="num">Needed</th>
+            <th class="num">Delta</th>
+          </tr></thead>
+          <tbody>
+            ${paceRow('Revenue / month',  metrics.currentMonthlyRevenue,  metrics.neededMonthlyRevenue, 'money')}
+            ${paceRow('Deals / month',    metrics.currentMonthlyDeals,    metrics.neededMonthlyDeals, 'count')}
+            ${paceRow('Realtors / month', null,                           metrics.neededMonthlyRealtors, 'count')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+
+  // --- Predictions panel HTML ---
+  const predictionsHTML = predictions.conservative ? `
+    <div class="horizon-tabs">${horizonTabs}</div>
+
+    <div class="scenario-grid">
+      ${scenarioCard('Conservative', 'No growth · last 6-mo avg', predictions.conservative, 'muted')}
+      ${scenarioCard('Expected', 'Linear trend · last 12 mo',     predictions.expected,     'forest')}
+      ${scenarioCard('Optimistic', 'Trend + growth',               predictions.optimistic,   'gold')}
+    </div>
+
+    <div class="panel__body panel__body--chart">
+      <div class="chart-wrap chart-wrap--tall">
+        <canvas id="goalsForecastChart"></canvas>
+      </div>
+    </div>
+
+    <div class="prediction-assumptions">
+      <div class="form-section-title">${icon('settings', 12)} Assumptions</div>
+      <div class="assumption-grid">
+        <div class="assumption-item"><span class="assumption-item__label">History</span><span class="assumption-item__value">${predictions.assumptions.historyMonths} months</span></div>
+        <div class="assumption-item"><span class="assumption-item__label">Confidence</span><span class="assumption-item__value">${predictions.assumptions.confidence}</span></div>
+        <div class="assumption-item"><span class="assumption-item__label">Avg growth / month</span><span class="assumption-item__value">${predictions.assumptions.avgGrowth > 0 ? '+' : ''}${predictions.assumptions.avgGrowth}%</span></div>
+        <div class="assumption-item"><span class="assumption-item__label">6-mo avg revenue</span><span class="assumption-item__value">${fmtMoney(predictions.assumptions.rev6, { decimals: 0 })}</span></div>
+        <div class="assumption-item"><span class="assumption-item__label">Type mix</span><span class="assumption-item__value">${predictions.assumptions.typeMix.purchase}% P · ${predictions.assumptions.typeMix.refinance}% R · ${predictions.assumptions.typeMix.subordinate}% S</span></div>
+      </div>
+    </div>
+  ` : `
+    <div class="empty-state">
+      <div class="empty-state__eyebrow">Not enough history</div>
+      <h3 class="empty-state__title">Add a few deals to unlock predictions.</h3>
+      <p class="empty-state__body">Forecasts are based on your monthly pattern. Once you have 3+ months of data, you'll see conservative / expected / optimistic trajectories for 1 month, 6 months, 1 year, and 5 years out.</p>
+    </div>
+  `;
+
+  return `
+    <section class="view">
+      <header class="view-header">
+        <div class="view-header__left">
+          <div class="eyebrow">Strategy</div>
+          <h1>Set the goal. <em>Track the pace.</em></h1>
+        </div>
+        <div class="view-header__right">
+          <button class="btn btn--gold" data-action="open-goals-modal">${goal ? 'Edit' : 'Set'} ${year} Goals</button>
+        </div>
+      </header>
+
+      <div class="panel">
+        <div class="panel__head">
+          <div>
+            <h3 class="panel__title">${icon('check', 16)} Goal Tracker · ${year}</h3>
+            <div class="panel__subtitle">Actual vs. goal · projected end of year · required monthly pace</div>
+          </div>
+          <div class="year-chips">${yearChips}</div>
+        </div>
+        <div class="panel__body">
+          ${trackerHTML}
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel__head">
+          <div>
+            <h3 class="panel__title">${icon('monthly', 16)} Predictions</h3>
+            <div class="panel__subtitle">Forecast your next month, half-year, full year, and five-year trajectory</div>
+          </div>
+        </div>
+        ${predictionsHTML}
+      </div>
+    </section>
+  `;
+};
+
+function metricsNarrative(goal, m) {
+  const diff = m.revenueVariance;
+  const pct = goal.revenue ? Math.abs(diff / goal.revenue) * 100 : 0;
+  if (m.status === 'AHEAD') {
+    return `On pace for ${fmtMoney(m.projectedEOYRevenue, { decimals: 0 })} — <strong>${fmtMoney(diff, { decimals: 0 })}</strong> over your ${fmtMoney(goal.revenue, { decimals: 0 })} goal.`;
+  }
+  if (m.status === 'ON TRACK') {
+    return `Projected year-end revenue is <strong>${fmtMoney(m.projectedEOYRevenue, { decimals: 0 })}</strong> — within 5% of your ${fmtMoney(goal.revenue, { decimals: 0 })} goal.`;
+  }
+  if (m.status === 'SLIGHTLY BEHIND') {
+    return `Trending to ${fmtMoney(m.projectedEOYRevenue, { decimals: 0 })} — <strong>${fmtMoney(Math.abs(diff), { decimals: 0 })}</strong> (${pct.toFixed(0)}%) short of goal. Time to push.`;
+  }
+  if (m.status === 'BEHIND') {
+    return `Trending to ${fmtMoney(m.projectedEOYRevenue, { decimals: 0 })} — well short of ${fmtMoney(goal.revenue, { decimals: 0 })}. Need <strong>${fmtMoney(m.neededMonthlyRevenue, { decimals: 0 })}/month</strong> over the next ${Math.round(m.monthsRemaining)} months.`;
+  }
+  return 'No goal set.';
+}
+
+function goalCard(label, ytdStr, goalStr, pct, expectedPct) {
+  const safePct = Math.min(100, Math.max(0, pct));
+  const markerPct = Math.min(100, Math.max(0, expectedPct));
+  const aheadOfPace = pct >= expectedPct;
+  return `
+    <div class="goal-card" data-animate="card">
+      <div class="goal-card__label">${label}</div>
+      <div class="goal-card__ytd">${ytdStr}</div>
+      <div class="goal-card__goal">of ${goalStr}</div>
+      <div class="goal-bar">
+        <div class="goal-bar__fill" style="width: 0%" data-target-width="${safePct.toFixed(1)}"></div>
+        <div class="goal-bar__marker" style="left: ${markerPct}%" title="Expected pace: ${markerPct.toFixed(0)}%"></div>
+      </div>
+      <div class="goal-card__footer">
+        <span class="goal-card__pct">${pct.toFixed(0)}%</span>
+        <span class="goal-card__expected ${aheadOfPace ? 'is-ahead' : 'is-behind'}">
+          ${aheadOfPace ? '↑' : '↓'} ${Math.abs(pct - expectedPct).toFixed(0)}% vs pace
+        </span>
+      </div>
+    </div>
+  `;
+}
+
+function paceRow(label, current, needed, kind) {
+  const fmt = (v) => {
+    if (v === null || v === undefined) return '—';
+    if (kind === 'money') return fmtMoney(v, { decimals: 0 });
+    return (Number(v).toFixed(1));
+  };
+  let delta = '';
+  if (current !== null && current !== undefined && needed > 0) {
+    const pct = ((current - needed) / needed) * 100;
+    const up = pct >= 0;
+    delta = `<span class="delta ${up ? 'delta--up' : 'delta--down'}">${up ? '↑' : '↓'} ${Math.abs(pct).toFixed(0)}% ${up ? '✓' : ''}</span>`;
+  }
+  return `<tr>
+    <td>${label}</td>
+    <td class="num">${fmt(current)}</td>
+    <td class="num">${fmt(needed)}</td>
+    <td class="num">${delta}</td>
+  </tr>`;
+}
+
+function scenarioCard(title, subtitle, data, tone) {
+  if (!data) return '';
+  return `
+    <div class="scenario-card scenario-card--${tone}" data-animate="scenario">
+      <div class="scenario-card__head">
+        <div class="scenario-card__title">${title}</div>
+        <div class="scenario-card__sub">${subtitle}</div>
+      </div>
+      <div class="scenario-card__revenue">${fmtMoney(data.revenue, { decimals: 0 })}</div>
+      <div class="scenario-card__deals">${fmtNumber(data.deals)} deals</div>
+      <div class="scenario-card__rule"></div>
+      <div class="scenario-card__row"><span class="scenario-card__rowLabel">Avg / deal</span><span class="scenario-card__rowValue">${fmtMoney(data.avgDeal, { decimals: 0 })}</span></div>
+      <div class="scenario-card__row"><span class="scenario-card__rowLabel">Purchase</span><span class="scenario-card__rowValue">${data.purchase}</span></div>
+      <div class="scenario-card__row"><span class="scenario-card__rowLabel">Refinance</span><span class="scenario-card__rowValue">${data.refinance}</span></div>
+      <div class="scenario-card__row"><span class="scenario-card__rowLabel">Subordinate</span><span class="scenario-card__rowValue">${data.subordinate}</span></div>
+    </div>
+  `;
+}
+
+Views.goalsPost = function(params = {}) {
+  const today = new Date();
+  const year = Number(params.year || today.getFullYear());
+  const horizon = params.horizon || '1y';
+
+  // GSAP entry animations
+  Animate.staggerIn('[data-animate="card"]', { delay: 0.1, stagger: 0.08 });
+  Animate.staggerIn('[data-animate="scenario"]', { delay: 0.2, stagger: 0.08 });
+  Animate.growBars('.goal-bar__fill', { baseDelay: 0.5, stagger: 0.1, duration: 1.1 });
+
+  // Edit / set goals buttons (both header button and empty-state button)
+  document.querySelectorAll('[data-action="open-goals-modal"]').forEach(btn => {
+    btn.addEventListener('click', () => App.openGoalsModal(year));
+  });
+
+  // Year chip switcher
+  document.querySelectorAll('.year-chip').forEach(btn => {
+    btn.addEventListener('click', () => {
+      App.navigate('goals', { year: btn.getAttribute('data-year'), horizon });
+    });
+  });
+
+  // Horizon tab switcher
+  document.querySelectorAll('.horizon-tab').forEach(btn => {
+    btn.addEventListener('click', () => {
+      App.navigate('goals', { year: String(year), horizon: btn.getAttribute('data-horizon') });
+    });
+  });
+
+  // Render chart if present
+  const canvas = document.getElementById('goalsForecastChart');
+  if (canvas) {
+    const horizonMap = { '1m': 1, '6m': 6, '1y': 12, '5y': 60 };
+    const predictions = computePredictions(horizonMap[horizon] || 12, Store.getMonthlyStats());
+    renderForecastChart(canvas, predictions.chart);
+  }
+};
+
+function renderForecastChart(canvas, chartData) {
+  if (!chartData || !chartData.labels?.length) return;
+  if (CHARTS[canvas.id]) { try { CHARTS[canvas.id].destroy(); } catch {} }
+  const ctx = canvas.getContext('2d');
+  CHARTS[canvas.id] = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: chartData.labels,
+      datasets: [
+        {
+          label: 'Historical',
+          data: chartData.historical,
+          borderColor: CHART_COLORS.forestDeep,
+          backgroundColor: 'rgba(15, 41, 34, 0.06)',
+          borderWidth: 2.5,
+          tension: 0.22,
+          pointRadius: 3,
+          pointBackgroundColor: CHART_COLORS.forestDeep,
+          fill: true,
+          spanGaps: false
+        },
+        {
+          label: 'Expected',
+          data: chartData.expected,
+          borderColor: CHART_COLORS.forestPrimary,
+          borderWidth: 2,
+          borderDash: [6, 4],
+          tension: 0.18,
+          pointRadius: 0,
+          fill: false,
+          spanGaps: true
+        },
+        {
+          label: 'Conservative',
+          data: chartData.conservative,
+          borderColor: 'rgba(120, 110, 90, 0.7)',
+          borderWidth: 1.6,
+          borderDash: [3, 3],
+          tension: 0,
+          pointRadius: 0,
+          fill: false,
+          spanGaps: true
+        },
+        {
+          label: 'Optimistic',
+          data: chartData.optimistic,
+          borderColor: CHART_COLORS.gold,
+          borderWidth: 2,
+          borderDash: [6, 4],
+          tension: 0.18,
+          pointRadius: 0,
+          fill: false,
+          spanGaps: true
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: {
+          position: 'bottom',
+          labels: {
+            color: CHART_COLORS.forestPrimary,
+            font: { family: 'Montserrat', size: 11, weight: '600' },
+            padding: 14,
+            boxWidth: 18,
+            usePointStyle: false
+          }
+        },
+        tooltip: {
+          backgroundColor: CHART_COLORS.forestDeep,
+          titleColor: CHART_COLORS.goldLight,
+          bodyColor: CHART_COLORS.cream,
+          padding: 12,
+          titleFont: { family: 'Montserrat', weight: '600', size: 11 },
+          bodyFont: { family: 'Cormorant Garamond', size: 16 },
+          callbacks: {
+            label: (c) => c.parsed.y == null ? null : `${c.dataset.label}: $${c.parsed.y.toLocaleString('en-US', { maximumFractionDigits: 0 })}`
+          }
+        }
+      },
+      scales: {
+        x: {
+          grid: { display: false },
+          ticks: { color: CHART_COLORS.forestPrimary, font: { family: 'Montserrat', size: 10 }, maxRotation: 0, autoSkip: true, maxTicksLimit: 12 }
+        },
+        y: {
+          grid: { color: 'rgba(15, 41, 34, 0.06)' },
+          ticks: {
+            color: CHART_COLORS.forestPrimary,
+            font: { family: 'Montserrat', size: 10 },
+            callback: (v) => '$' + Number(v).toLocaleString('en-US', { maximumFractionDigits: 0 })
+          }
+        }
+      }
+    }
+  });
+}
+
+/* ========================================================================
+   Utility
+   ======================================================================== */
+
+function debounce(fn, wait) {
+  let t;
+  return function (...args) {
+    clearTimeout(t);
+    t = setTimeout(() => fn.apply(this, args), wait);
+  };
+}
