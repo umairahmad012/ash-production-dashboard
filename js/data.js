@@ -1061,9 +1061,11 @@ function computePredictions(horizonMonths, monthlyStats) {
     deals: Math.round(expDeals)
   };
 
-  // Optimistic: compound growth on recent-3 base, capped
-  const base = rev3 > 0 ? rev3 : rev6;
-  const dealBase = deals3 > 0 ? deals3 : deals6;
+  // Optimistic: compound growth on the higher of recent-3 or 6-mo base, capped.
+  // Using max() prevents a recent dip from making Optimistic undershoot Conservative
+  // at short horizons where compounding has no time to work.
+  const base = Math.max(rev3, rev6);
+  const dealBase = Math.max(deals3, deals6);
   let optRevenue = 0, optDeals = 0;
   const optimisticMonthly = [];
   for (let m = 1; m <= horizonMonths; m++) {
