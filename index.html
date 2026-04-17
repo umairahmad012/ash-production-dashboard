@@ -7,38 +7,29 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;1,300;1,400;1,500&family=Montserrat:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="css/styles.css?v=3" />
+  <link rel="stylesheet" href="css/styles.css?v=4" />
 </head>
 <body class="is-auth-loading">
 
   <!-- ═════ AUTH GATE ══════════════════════════════════════════════════════ -->
-  <!-- Shown until Clerk finishes loading + authorization check completes.    -->
+  <!-- Shown until Clerk finishes loading + authorization check completes.
+       Minimal: Clerk widget stands alone on the cream background. -->
   <div class="auth-gate" id="authGate">
-    <div class="auth-gate__card">
-      <div class="auth-gate__brand">
-        <span class="auth-gate__brandName">Real Achiever</span>
-        <span class="auth-gate__brandAttr">by Brand Bonjour</span>
-      </div>
+    <!-- Loading state (shown while Clerk boots) -->
+    <div class="auth-gate__loading" id="authLoading">
+      <div class="auth-spinner" aria-hidden="true"></div>
+    </div>
 
-      <!-- Loading state (shown while Clerk boots) -->
-      <div class="auth-gate__body auth-gate__body--loading" id="authLoading">
-        <div class="auth-spinner" aria-hidden="true"></div>
-        <div class="auth-gate__hint">Loading…</div>
-      </div>
+    <!-- Sign-in state (Clerk widget mounts here, no custom wrapper) -->
+    <div id="authSignIn" hidden>
+      <div id="clerkSignInSlot"></div>
+    </div>
 
-      <!-- Sign-in state (Clerk widget mounts here) -->
-      <div class="auth-gate__body auth-gate__body--signin" id="authSignIn" hidden>
-        <h1 class="auth-gate__title">Sign in to the <em>Production CRM</em></h1>
-        <p class="auth-gate__sub">Use your authorized Google account.</p>
-        <div id="clerkSignInSlot"></div>
-      </div>
-
-      <!-- Pending approval state -->
-      <div class="auth-gate__body auth-gate__body--pending" id="authPending" hidden>
-        <h1 class="auth-gate__title">Account not yet authorized</h1>
-        <p class="auth-gate__sub">You're signed in as <strong id="authPendingEmail">—</strong>, but this email hasn't been added to the CRM. Ask an admin to invite you.</p>
-        <button type="button" class="btn btn--ghost" id="authSignOutBtn">Sign out</button>
-      </div>
+    <!-- Pending approval state -->
+    <div class="auth-gate__pending" id="authPending" hidden>
+      <h2>Account not authorized</h2>
+      <p>You're signed in as <strong id="authPendingEmail">—</strong>, but this email isn't on the access list. Ask an admin to invite you.</p>
+      <button type="button" class="btn btn--ghost" id="authSignOutBtn">Sign out</button>
     </div>
   </div>
 
@@ -158,11 +149,11 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
-  <script src="js/auth.js?v=3"></script>
-  <script src="js/seed.js?v=3"></script>
-  <script src="js/data.js?v=3"></script>
-  <script src="js/import.js?v=3"></script>
-  <script src="js/views.js?v=3"></script>
-  <script src="js/app.js?v=3"></script>
+  <script src="js/auth.js?v=4"></script>
+  <script src="js/seed.js?v=4"></script>
+  <script src="js/data.js?v=4"></script>
+  <script src="js/import.js?v=4"></script>
+  <script src="js/views.js?v=4"></script>
+  <script src="js/app.js?v=4"></script>
 </body>
 </html>

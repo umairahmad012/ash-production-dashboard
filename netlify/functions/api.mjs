@@ -184,6 +184,8 @@ async function handleAddOrUpdateUser(req, user) {
 
   const directory = await readUsersDirectory();
   let entry = findUserInDirectory(directory, email);
+  const isNewUser = !entry;
+
   if (entry) {
     entry.role = role;
   } else {
@@ -195,12 +197,63 @@ async function handleAddOrUpdateUser(req, user) {
       firstName: '',
       lastName: '',
       imageUrl: '',
-      lastSeenAt: null
+      lastSeenAt: null,
+      invitationSent: false,
+      invitationId: null
     };
     directory.users.push(entry);
   }
+
+  // For brand-new invites, ask Clerk to email the user a sign-up link.
+  // We still add to the allowlist even if the email send fails — the
+  // user can sign in with Google directly and access will still work.
+  let inviteResult = null;
+  if (isNewUser) {
+    inviteResult = await sendClerkInvitation(req, email, role);
+    if (inviteResult.ok) {
+      entry.invitationSent = true;
+      entry.invitationId = inviteResult.invitationId;
+    } else {
+      entry.invitationError = inviteResult.reason;
+    }
+  }
+
   await writeUsersDirectory(directory);
-  return json({ ok: true, user: entry });
+  return json({ ok: true, user: entry, invite: inviteResult });
+}
+
+// Ask Clerk's Backend API to email a sign-up invitation link to `email`.
+// Clerk sends the email itself (their SMTP). The link lands on Clerk's
+// Account Portal, where the user signs up; we don't need a custom
+// redirect URL.
+async function sendClerkInvitation(req, email, role) {
+  try {
+    const origin = new URL(req.url).origin;
+    const resp = await fetch('https://api.clerk.com/v1/invitations', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${process.env.CLERK_SECRET_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        email_address: email,
+        redirect_url: origin,
+        public_metadata: { role, source: 'ra-crm-admin' },
+        notify: true,
+        ignore_existing: true
+      })
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      // Clerk returns structured errors; surface the first message cleanly
+      const firstError = data.errors?.[0];
+      const message = firstError?.long_message || firstError?.message || `Clerk ${resp.status}`;
+      return { ok: false, reason: message };
+    }
+    return { ok: true, invitationId: data.id, status: data.status };
+  } catch (e) {
+    return { ok: false, reason: 'Network error: ' + e.message };
+  }
 }
 
 async function handleDeleteUser(email, user) {

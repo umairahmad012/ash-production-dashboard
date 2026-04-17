@@ -909,8 +909,20 @@ App._wireAdminModal = function() {
         method: 'POST',
         body: JSON.stringify({ email, role })
       });
-      if (resp.ok) { App.toast('User saved'); App.openAdminModal(); }
-      else App.toast('Save failed: ' + resp.status);
+      if (!resp.ok) {
+        App.toast('Save failed: ' + resp.status);
+        return;
+      }
+      const body = await resp.json().catch(() => ({}));
+      const invite = body.invite;
+      if (invite && invite.ok) {
+        App.toast(`Invitation emailed to ${email}`);
+      } else if (invite && !invite.ok) {
+        App.toast(`Added ${email} (email not sent: ${invite.reason})`);
+      } else {
+        App.toast(`Updated ${email}`);
+      }
+      App.openAdminModal();
     });
   }
 
@@ -959,6 +971,11 @@ function adminModalHTML(dir, me) {
   const rows = users.map(u => {
     const isMe = u.email.toLowerCase() === me.email.toLowerCase();
     const displayName = ((u.firstName || '') + ' ' + (u.lastName || '')).trim() || '—';
+    const lastSeenCell = u.lastSeenAt
+      ? fmtDate(u.lastSeenAt)
+      : (u.invitationSent
+          ? '<span class="admin-badge">Invited</span>'
+          : '<span class="admin-dim">—</span>');
     return `
       <tr>
         <td>
@@ -977,7 +994,7 @@ function adminModalHTML(dir, me) {
             <option value="viewer" ${u.role === 'viewer' ? 'selected' : ''}>Viewer</option>
           </select>
         </td>
-        <td class="num">${fmtDate(u.lastSeenAt)}</td>
+        <td class="num">${lastSeenCell}</td>
         <td class="num">${fmtDate(u.addedAt)}</td>
         <td>
           ${isMe ? '' : `<button type="button" class="btn-link btn-link--danger" data-admin-remove="${escapeHtml(u.email)}">Remove</button>`}

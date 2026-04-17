@@ -139,11 +139,8 @@ const Auth = {
     document.getElementById('authLoading').hidden = true;
     document.getElementById('authSignIn').hidden = false;
     try {
-      window.Clerk.mountSignIn(document.getElementById('clerkSignInSlot'), {
-        appearance: {
-          elements: { rootBox: 'ra-clerk-rootbox' }
-        }
-      });
+      // No custom appearance — let Clerk's default widget render.
+      window.Clerk.mountSignIn(document.getElementById('clerkSignInSlot'));
     } catch (e) {
       this._showError('Sign-in widget failed: ' + e.message);
     }
