@@ -958,6 +958,102 @@ function computeTrackerMetrics(year, goal, today = new Date()) {
   };
 }
 
+/* -------------------------- Business Equation ---------------------------
+   Identity: monthly_revenue = active_clients × deals_per_client × avg_deal_price
+
+   "Active clients" for a given month = distinct credited realtors (client field,
+   plus both sides when attribution = 'Both') who closed ≥1 deal that month.
+
+   Baseline is the trailing-12-month average so current pace is stable
+   regardless of which year the user has selected. When a goal exists,
+   decomposes the monthly revenue target into the three single-lever paths
+   that would each independently close the gap.
+--------------------------------------------------------------------------- */
+function computeBusinessEquation(goal, today = new Date()) {
+  // Trailing 12 months of real activity
+  const past12Start = new Date(today);
+  past12Start.setMonth(past12Start.getMonth() - 12);
+
+  const recentDeals = Store.getDeals().filter(d => {
+    if (!d.disbursementDate) return false;
+    const dt = new Date(d.disbursementDate);
+    return dt >= past12Start && dt <= today;
+  });
+
+  // Bucket by year-month; within each month, collect distinct credited realtors
+  const monthBuckets = new Map();
+  for (const d of recentDeals) {
+    const dt = new Date(d.disbursementDate);
+    const ym = dt.getFullYear() + '-' + String(dt.getMonth() + 1).padStart(2, '0');
+    if (!monthBuckets.has(ym)) monthBuckets.set(ym, { deals: [], clients: new Set() });
+    const b = monthBuckets.get(ym);
+    b.deals.push(d);
+    if (d.client && d.client.trim()) b.clients.add(d.client.trim().toLowerCase());
+    if ((d.clientAttribution || '') === 'Both') {
+      if (d.listingAgent) b.clients.add(d.listingAgent.trim().toLowerCase());
+      if (d.sellingAgent) b.clients.add(d.sellingAgent.trim().toLowerCase());
+    }
+  }
+
+  const months = Array.from(monthBuckets.values());
+  const activeMonths = months.length || 1;
+  const totalRev = recentDeals.reduce((s, d) => s + Number(d.revenue || 0), 0);
+  const totalDeals = recentDeals.length;
+
+  // Monthly averages — the levers
+  const avgRevenue = round2(totalRev / activeMonths);
+  const avgClients = months.length
+    ? round2(months.reduce((s, m) => s + m.clients.size, 0) / activeMonths)
+    : 0;
+  const avgDeals = round2(totalDeals / activeMonths);
+  const avgDealPrice = totalDeals > 0 ? round2(totalRev / totalDeals) : 0;
+  const avgDealsPerClient = avgClients > 0 ? round2(avgDeals / avgClients) : 0;
+
+  const current = {
+    revenue: avgRevenue,
+    clients: avgClients,
+    deals: avgDeals,
+    dealPrice: avgDealPrice,
+    dealsPerClient: avgDealsPerClient,
+    historyMonths: months.length
+  };
+
+  // If no revenue goal, just surface current pace — no target, no paths
+  if (!goal || !goal.revenue) {
+    return { current, target: null, paths: null };
+  }
+
+  const targetMonthlyRev = round2(goal.revenue / 12);
+  const revenueGap = round2(targetMonthlyRev - avgRevenue);
+
+  // Three single-lever paths that each close the gap on their own.
+  // Hold the other two levers at their current values; solve for the one.
+  const clientsNeeded = (avgDealPrice > 0 && avgDealsPerClient > 0)
+    ? round2(targetMonthlyRev / (avgDealPrice * avgDealsPerClient))
+    : null;
+  const dealsPerClientNeeded = (avgDealPrice > 0 && avgClients > 0)
+    ? round2(targetMonthlyRev / (avgDealPrice * avgClients))
+    : null;
+  const priceNeeded = (avgClients > 0 && avgDealsPerClient > 0)
+    ? round2(targetMonthlyRev / (avgClients * avgDealsPerClient))
+    : null;
+
+  const target = {
+    revenue: targetMonthlyRev,
+    revenueGap,
+    // Each "path" is the value that single lever must hit for the
+    // equation to balance at the target
+    clients: clientsNeeded,
+    dealsPerClient: dealsPerClientNeeded,
+    dealPrice: priceNeeded,
+    // Implied total deals/month for the clients-path
+    dealsImpliedByClients: (clientsNeeded !== null && avgDealsPerClient > 0)
+      ? round2(clientsNeeded * avgDealsPerClient) : null
+  };
+
+  return { current, target };
+}
+
 /* -------------------------- Prediction math --------------------------- */
 
 // Linear regression on an array of {x, y} points; returns { slope, intercept }

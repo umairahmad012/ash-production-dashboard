@@ -2780,6 +2780,7 @@ Views.goals = function(query = {}) {
   const goal = Goals.get(year);
   const monthlyStats = Store.getMonthlyStats();
   const metrics = goal ? computeTrackerMetrics(year, goal, today) : null;
+  const equation = computeBusinessEquation(goal, today);
   const availableYears = Array.from(new Set([...Goals.years(), year, today.getFullYear(), today.getFullYear() + 1])).sort();
 
   const horizonMap = { '1m': 1, '6m': 6, '1y': 12, '5y': 60 };
@@ -2904,6 +2905,18 @@ Views.goals = function(query = {}) {
       <div class="panel">
         <div class="panel__head">
           <div>
+            <h3 class="panel__title">${icon('goals', 16)} The Business Equation</h3>
+            <div class="panel__subtitle">Revenue = Active Realtors × Deals per Realtor × Avg Deal Price</div>
+          </div>
+        </div>
+        <div class="panel__body">
+          ${buildEquationHTML(equation)}
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel__head">
+          <div>
             <h3 class="panel__title">${icon('monthly', 16)} Predictions</h3>
             <div class="panel__subtitle">Forecast your next month, half-year, full year, and five-year trajectory</div>
           </div>
@@ -2913,6 +2926,144 @@ Views.goals = function(query = {}) {
     </section>
   `;
 };
+
+function buildEquationHTML(eq) {
+  const c = eq.current;
+
+  if (!c || c.historyMonths === 0) {
+    return `
+      <div class="empty-state">
+        <div class="empty-state__eyebrow">No recent activity</div>
+        <h3 class="empty-state__title">Log some deals to see the business equation.</h3>
+        <p class="empty-state__body">Once you have a month or two of activity, this panel will show how your realtors, deals, and deal size combine to produce revenue — and what each would need to shift by to hit your goal.</p>
+      </div>
+    `;
+  }
+
+  const fClients = n => n === null || n === undefined ? '—' : Number(n).toLocaleString('en-US', { maximumFractionDigits: 1 });
+  const fDeals   = n => n === null || n === undefined ? '—' : Number(n).toLocaleString('en-US', { maximumFractionDigits: 2 });
+  const fPrice   = n => n === null || n === undefined ? '—' : fmtMoney(n, { decimals: 0 });
+  const fRev     = n => n === null || n === undefined ? '—' : fmtMoney(n, { decimals: 0 });
+
+  const lever = (value, label) => `
+    <div class="eq-lever">
+      <div class="eq-lever__value">${value}</div>
+      <div class="eq-lever__label">${label}</div>
+    </div>
+  `;
+
+  const currentRow = `
+    <div class="eq-row">
+      <div class="eq-row__label">Your Pace<br><small>trailing 12 mo</small></div>
+      <div class="eq-row__formula">
+        <div class="eq-total">${fRev(c.revenue)}<small>/mo</small></div>
+        <span class="eq-equals">=</span>
+        ${lever(fClients(c.clients), 'active realtors')}
+        <span class="eq-op">×</span>
+        ${lever(fDeals(c.dealsPerClient), 'deals / realtor')}
+        <span class="eq-op">×</span>
+        ${lever(fPrice(c.dealPrice), 'avg deal')}
+      </div>
+    </div>
+  `;
+
+  if (!eq.target) {
+    return `
+      <div class="eq-wrap">
+        ${currentRow}
+        <div class="eq-hint">Set a revenue goal above to see what each lever must reach to close the gap.</div>
+      </div>
+    `;
+  }
+
+  const t = eq.target;
+  const aheadOfPace = t.revenueGap <= 0;
+
+  const targetRow = `
+    <div class="eq-row eq-row--target">
+      <div class="eq-row__label">To Hit Goal<br><small>${fRev(t.revenue * 12)}/yr</small></div>
+      <div class="eq-row__formula">
+        <div class="eq-total eq-total--target">${fRev(t.revenue)}<small>/mo</small></div>
+        <div class="eq-row__narrative">
+          ${aheadOfPace
+            ? `You're <strong>${fRev(Math.abs(t.revenueGap))}</strong>/mo ahead of the target pace.`
+            : `You're <strong>${fRev(t.revenueGap)}</strong>/mo short.`}
+        </div>
+      </div>
+    </div>
+  `;
+
+  if (aheadOfPace) {
+    return `
+      <div class="eq-wrap">
+        ${currentRow}
+        ${targetRow}
+        <div class="eq-hint">Your trailing-12-month pace already clears this goal. Consider raising the target.</div>
+      </div>
+    `;
+  }
+
+  // Three paths
+  const clientDelta = t.clients - c.clients;
+  const dealsDelta  = t.dealsPerClient - c.dealsPerClient;
+  const priceDelta  = t.dealPrice - c.dealPrice;
+
+  const pathCard = (title, desc, rows) => `
+    <div class="path-card">
+      <div class="path-card__head">
+        <div class="path-card__title">${title}</div>
+        <div class="path-card__desc">${desc}</div>
+      </div>
+      <div class="path-card__rows">
+        ${rows.map(r => `
+          <div class="path-card__row ${r.highlight ? 'is-highlight' : ''}">
+            <span class="path-card__metric">${r.label}</span>
+            <span class="path-card__value">${r.value}</span>
+            ${r.delta ? `<span class="path-card__delta">${r.delta}</span>` : ''}
+          </div>
+        `).join('')}
+      </div>
+    </div>
+  `;
+
+  const pathsHTML = `
+    <div class="eq-paths">
+      <div class="eq-paths__title">Three paths to close the ${fRev(t.revenueGap)}/mo gap</div>
+      <div class="eq-paths__subtitle">Each path holds two levers at today's pace and solves for the third.</div>
+      <div class="path-grid">
+        ${pathCard('Add realtors', 'More people sending you deals',
+          [
+            { label: 'Active realtors / mo', value: fClients(t.clients), delta: `+${fClients(clientDelta)}`, highlight: true },
+            { label: 'Deals / realtor',       value: fDeals(c.dealsPerClient) },
+            { label: 'Avg deal price',        value: fPrice(c.dealPrice) }
+          ]
+        )}
+        ${pathCard('Close more per realtor', 'Same realtors, more repeat deals',
+          [
+            { label: 'Active realtors / mo', value: fClients(c.clients) },
+            { label: 'Deals / realtor',       value: fDeals(t.dealsPerClient), delta: `+${fDeals(dealsDelta)}`, highlight: true },
+            { label: 'Avg deal price',        value: fPrice(c.dealPrice) }
+          ]
+        )}
+        ${pathCard('Raise deal size', 'Target higher-value properties',
+          [
+            { label: 'Active realtors / mo', value: fClients(c.clients) },
+            { label: 'Deals / realtor',       value: fDeals(c.dealsPerClient) },
+            { label: 'Avg deal price',        value: fPrice(t.dealPrice), delta: `+${fPrice(priceDelta)}`, highlight: true }
+          ]
+        )}
+      </div>
+    </div>
+  `;
+
+  return `
+    <div class="eq-wrap">
+      ${currentRow}
+      ${targetRow}
+      ${pathsHTML}
+    </div>
+  `;
+}
 
 function metricsNarrative(goal, m) {
   const diff = m.revenueVariance;
