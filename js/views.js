@@ -2779,15 +2779,13 @@ Views.goals = function(query = {}) {
   const horizon = query.horizon || '1y';
   const goal = Goals.get(year);
   const monthlyStats = Store.getMonthlyStats();
-  const metrics = goal ? computeTrackerMetrics(year, goal, today) : null;
-  const equation = computeBusinessEquation(goal, year, today);
+  const analysis = goal ? computeGoalAnalysis(goal, year, today) : null;
   const availableYears = Array.from(new Set([...Goals.years(), year, today.getFullYear(), today.getFullYear() + 1])).sort();
 
   const horizonMap = { '1m': 1, '6m': 6, '1y': 12, '5y': 60 };
   const horizonMonths = horizonMap[horizon] || 12;
   const predictions = computePredictions(horizonMonths, monthlyStats);
 
-  // Mini line: a label of the year chips
   const yearChips = availableYears.map(y =>
     `<button type="button" class="year-chip ${y === year ? 'is-active' : ''}" data-year="${y}">${y}</button>`
   ).join('');
@@ -2801,47 +2799,9 @@ Views.goals = function(query = {}) {
     `<button type="button" class="horizon-tab ${horizon === h.key ? 'is-active' : ''}" data-horizon="${h.key}">${h.label}</button>`
   ).join('');
 
-  // --- Goal tracker (top panel) HTML ---
-  const trackerHTML = !goal ? `
-    <div class="empty-state">
-      <div class="empty-state__eyebrow">No ${year} goals set</div>
-      <h3 class="empty-state__title">Set your ${year} targets to start tracking.</h3>
-      <p class="empty-state__body">Input a revenue goal, deal count, and realtor target. We'll calculate your pace, projection, and what you need to do each month to hit them.</p>
-      <button class="btn btn--gold" data-action="open-goals-modal">Set ${year} Goals</button>
-    </div>
-  ` : `
-    <div class="goal-tracker">
-      <div class="goal-tracker__hero">
-        <div class="status-badge status-badge--${metrics.statusTone}">${metrics.status}</div>
-        <div class="goal-tracker__narrative">
-          ${metricsNarrative(goal, metrics)}
-        </div>
-      </div>
-
-      <div class="goal-grid">
-        ${goalCard('Revenue', fmtMoney(metrics.ytdRevenue, { decimals: 0 }), fmtMoney(goal.revenue, { decimals: 0 }), metrics.revenuePct, metrics.expectedPacePct)}
-        ${goalCard('Deals', fmtNumber(metrics.ytdDealCount), fmtNumber(goal.deals), metrics.dealsPct, metrics.expectedPacePct)}
-        ${goalCard('Realtors', fmtNumber(metrics.ytdRealtorCount), fmtNumber(goal.activeRealtors), metrics.realtorsPct, metrics.expectedPacePct)}
-      </div>
-
-      <div class="pace-compare">
-        <div class="pace-compare__title">Current vs. Needed Pace</div>
-        <table class="pace-table">
-          <thead><tr>
-            <th></th>
-            <th class="num">Current (last 3mo)</th>
-            <th class="num">Needed</th>
-            <th class="num">Delta</th>
-          </tr></thead>
-          <tbody>
-            ${paceRow('Revenue / month',  metrics.currentMonthlyRevenue,  metrics.neededMonthlyRevenue, 'money')}
-            ${paceRow('Deals / month',    metrics.currentMonthlyDeals,    metrics.neededMonthlyDeals, 'count')}
-            ${paceRow('Realtors / month', null,                           metrics.neededMonthlyRealtors, 'count')}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  `;
+  const trackerHTML = !goal
+    ? buildGoalEmptyStateHTML(year)
+    : buildGoalTrackerHTML(goal, analysis);
 
   // --- Predictions panel HTML ---
   const predictionsHTML = predictions.conservative ? `
@@ -2893,24 +2853,12 @@ Views.goals = function(query = {}) {
         <div class="panel__head">
           <div>
             <h3 class="panel__title">${icon('check', 16)} Goal Tracker · ${year}</h3>
-            <div class="panel__subtitle">Actual vs. goal · projected end of year · required monthly pace</div>
+            <div class="panel__subtitle">YTD progress · projection from trailing-12-month pace · path to goal</div>
           </div>
           <div class="year-chips">${yearChips}</div>
         </div>
         <div class="panel__body">
           ${trackerHTML}
-        </div>
-      </div>
-
-      <div class="panel">
-        <div class="panel__head">
-          <div>
-            <h3 class="panel__title">${icon('goals', 16)} The Business Equation</h3>
-            <div class="panel__subtitle">Revenue = Active Realtors × Deals per Realtor × Avg Deal Price</div>
-          </div>
-        </div>
-        <div class="panel__body">
-          ${buildEquationHTML(equation)}
         </div>
       </div>
 
@@ -2927,28 +2875,152 @@ Views.goals = function(query = {}) {
   `;
 };
 
-function buildEquationHTML(eq) {
-  const c = eq.current;
+/* ────────────────────────────────────────────────────────────────────────
+   Goal tracker — unified builder
+   Uses the analysis object from computeGoalAnalysis(). One coherent story:
+     hero (status + narrative)
+     projection vs goal
+     YTD progress bars (revenue / deals / realtors)
+     equation breakdown + needed pace
+     three paths (only when behind)
+   ──────────────────────────────────────────────────────────────────────── */
 
-  if (!c || (c.activeMonths === 0 && c.revenue === 0)) {
-    return `
-      <div class="empty-state">
-        <div class="empty-state__eyebrow">No recent activity</div>
-        <h3 class="empty-state__title">Log some deals to see the business equation.</h3>
-        <p class="empty-state__body">Once you have a month or two of activity, this panel will show how your realtors, deals, and deal size combine to produce revenue — and what each would need to shift by to hit your goal.</p>
-      </div>
-    `;
-  }
+function buildGoalEmptyStateHTML(year) {
+  return `
+    <div class="empty-state">
+      <div class="empty-state__eyebrow">No ${year} goals set</div>
+      <h3 class="empty-state__title">Set your ${year} targets to start tracking.</h3>
+      <p class="empty-state__body">Input a revenue goal, deal count, and realtor target. The tracker will then show your trailing-12-month pace, the year-end projection, and exactly what each lever of the business needs to do to hit the numbers.</p>
+      <button class="btn btn--gold" data-action="open-goals-modal">Set ${year} Goals</button>
+    </div>
+  `;
+}
 
-  const fClients = n => n === null || n === undefined ? '—' : Number(n).toLocaleString('en-US', { maximumFractionDigits: 1 });
-  const fDeals   = n => n === null || n === undefined ? '—' : Number(n).toLocaleString('en-US', { maximumFractionDigits: 2 });
-  const fPrice   = n => n === null || n === undefined ? '—' : fmtMoney(n, { decimals: 0 });
-  const fRev     = n => n === null || n === undefined ? '—' : fmtMoney(n, { decimals: 0 });
-  const fMonths  = n => {
-    if (n === null || n === undefined) return '—';
+function buildGoalTrackerHTML(goal, a) {
+  const fRev = n => fmtMoney(n, { decimals: 0 });
+  const fClients = n => Number(n).toLocaleString('en-US', { maximumFractionDigits: 1 });
+  const fDeals = n => Number(n).toLocaleString('en-US', { maximumFractionDigits: 2 });
+  const fPrice = n => fmtMoney(n, { decimals: 0 });
+  const fMonths = n => {
     const whole = Math.round(n);
     return whole === 1 ? '1 month' : whole + ' months';
   };
+
+  return `
+    <div class="goal-tracker">
+      ${buildGoalHeroHTML(goal, a, fRev, fMonths)}
+      ${buildGoalProjectionHTML(goal, a, fRev)}
+      ${buildGoalProgressGridHTML(goal, a)}
+      ${buildGoalEquationHTML(goal, a, fRev, fClients, fDeals, fPrice, fMonths)}
+    </div>
+  `;
+}
+
+// Hero: status badge + one-sentence narrative that matches the status
+function buildGoalHeroHTML(goal, a, fRev, fMonths) {
+  const narrative = goalNarrative(goal, a, fRev, fMonths);
+  return `
+    <div class="goal-tracker__hero">
+      <div class="status-badge status-badge--${a.statusTone}">${a.status}</div>
+      <div class="goal-tracker__narrative">${narrative}</div>
+    </div>
+  `;
+}
+
+function goalNarrative(goal, a, fRev, fMonths) {
+  const projected = fRev(a.projectedRevenue);
+  const target = fRev(goal.revenue);
+  const variance = fRev(Math.abs(a.revenueVariance));
+
+  if (a.status === 'AHEAD') {
+    return `At your trailing-12-month pace of <strong>${fRev(a.pace.revenue)}/mo</strong>, you'll finish the year at <strong>${projected}</strong> — about <strong>${variance}</strong> over the <strong>${target}</strong> target.`;
+  }
+  if (a.status === 'ON TRACK') {
+    return `At your trailing-12-month pace of <strong>${fRev(a.pace.revenue)}/mo</strong>, you'll finish the year near <strong>${projected}</strong> — within 5% of the <strong>${target}</strong> target.`;
+  }
+  if (a.status === 'SLIGHTLY BEHIND') {
+    return `Projecting <strong>${projected}</strong> at current pace — <strong>${variance}</strong> short of <strong>${target}</strong>. Need to lift pace to <strong>${fRev(a.neededMonthlyRevenue)}/mo</strong> over the next ${fMonths(a.monthsRemaining)} to catch up.`;
+  }
+  if (a.status === 'BEHIND') {
+    return `Projecting <strong>${projected}</strong> — well short of <strong>${target}</strong>. Need <strong>${fRev(a.neededMonthlyRevenue)}/mo</strong> over the next ${fMonths(a.monthsRemaining)} to hit the goal.`;
+  }
+  return 'Set a revenue goal to see your status.';
+}
+
+// Projection vs goal — two big numbers side by side
+function buildGoalProjectionHTML(goal, a, fRev) {
+  const pct = goal.revenue ? Math.min(150, Math.max(0, (a.projectedRevenue / goal.revenue) * 100)) : 0;
+  const barWidth = Math.min(100, pct);
+  return `
+    <div class="proj-wrap">
+      <div class="proj-row">
+        <div class="proj-col">
+          <div class="proj-col__label">Projected year-end</div>
+          <div class="proj-col__value">${fRev(a.projectedRevenue)}</div>
+          <div class="proj-col__hint">${fRev(a.ytdRevenue)} booked + ${fRev(a.forwardRevenue)} from ${Math.round(a.monthsRemaining)} months at current pace</div>
+        </div>
+        <div class="proj-col proj-col--target">
+          <div class="proj-col__label">${goal.year || a.year} target</div>
+          <div class="proj-col__value">${fRev(goal.revenue)}</div>
+          <div class="proj-col__hint">${a.revenueVariance >= 0 ? `+${fRev(a.revenueVariance)} cushion` : `${fRev(a.revenueVariance)} gap`}</div>
+        </div>
+      </div>
+      <div class="proj-bar" aria-label="Projected vs goal">
+        <div class="proj-bar__fill proj-bar__fill--${a.statusTone}" style="width: 0%" data-target-width="${barWidth.toFixed(1)}"></div>
+        <div class="proj-bar__marker" title="Goal">
+          <span class="proj-bar__marker-label">Goal</span>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// YTD progress grid: three cards, each showing YTD / goal + progress bar
+function buildGoalProgressGridHTML(goal, a) {
+  return `
+    <div class="ytd-grid">
+      ${ytdCard('YTD Revenue',
+        fmtMoney(a.ytdRevenue, { decimals: 0 }),
+        fmtMoney(goal.revenue, { decimals: 0 }),
+        a.revenuePct, a.yearProgressPct)}
+      ${ytdCard('YTD Deals',
+        fmtNumber(a.ytdDealCount),
+        fmtNumber(goal.deals),
+        a.dealsPct, a.yearProgressPct)}
+      ${ytdCard('Unique Realtors',
+        fmtNumber(a.ytdRealtorCount),
+        fmtNumber(goal.activeRealtors),
+        a.realtorsPct, a.yearProgressPct)}
+    </div>
+  `;
+}
+
+function ytdCard(label, ytdStr, goalStr, pct, yearPct) {
+  const safePct = Math.min(100, Math.max(0, pct));
+  const markerPct = Math.min(100, Math.max(0, yearPct));
+  return `
+    <div class="ytd-card" data-animate="card">
+      <div class="ytd-card__label">${label}</div>
+      <div class="ytd-card__ytd">${ytdStr}</div>
+      <div class="ytd-card__goal">of ${goalStr}</div>
+      <div class="ytd-bar" title="${pct.toFixed(0)}% of goal · year is ${yearPct.toFixed(0)}% through">
+        <div class="ytd-bar__fill" style="width: 0%" data-target-width="${safePct.toFixed(1)}"></div>
+        <div class="ytd-bar__marker" style="left: ${markerPct}%"></div>
+      </div>
+      <div class="ytd-card__footer">
+        <span class="ytd-card__pct">${pct.toFixed(0)}% of goal</span>
+        <span class="ytd-card__year">year: ${yearPct.toFixed(0)}%</span>
+      </div>
+    </div>
+  `;
+}
+
+// Equation: pace breakdown + needed pace + three paths (if behind)
+function buildGoalEquationHTML(goal, a, fRev, fClients, fDeals, fPrice, fMonths) {
+  const c = a.pace;
+  if (!c || c.revenue === 0) {
+    return `<div class="eq-hint">Not enough recent activity to compute a pace breakdown yet.</div>`;
+  }
 
   const lever = (value, label) => `
     <div class="eq-lever">
@@ -2972,61 +3044,44 @@ function buildEquationHTML(eq) {
     </div>
   `;
 
-  if (!eq.target) {
+  // If already met or ahead: just show pace + headroom, no paths
+  if (a.revenueGap === 0) {
     return `
       <div class="eq-wrap">
         ${currentRow}
-        <div class="eq-hint">Set a revenue goal above to see what each lever must reach to close the gap.</div>
+        <div class="eq-hint">Goal already booked for ${a.year}. Raise the target or hold the line.</div>
       </div>
     `;
   }
 
-  const t = eq.target;
-
-  if (t.alreadyMet) {
+  if (a.aheadOfPace) {
     return `
       <div class="eq-wrap">
         ${currentRow}
         <div class="eq-row eq-row--target">
-          <div class="eq-row__label">Goal Status</div>
+          <div class="eq-row__label">Needed Pace<br><small>next ${fMonths(a.monthsRemaining)}</small></div>
           <div class="eq-row__formula">
-            <div class="eq-row__narrative"><strong>${fRev(t.goalRevenue)}</strong> target already hit — you've booked <strong>${fRev(t.ytdRevenue)}</strong> so far in ${t.goalYear}. Consider raising the goal.</div>
+            <div class="eq-total eq-total--target">${fRev(a.neededMonthlyRevenue)}<small>/mo</small></div>
+            <div class="eq-row__narrative">Your current pace <strong>already clears</strong> what's needed — about <strong>${fRev(Math.abs(a.paceDelta))}/mo</strong> cushion.</div>
           </div>
         </div>
       </div>
     `;
   }
 
-  const ahead = t.paceDelta <= 0;
-
-  const targetRow = `
-    <div class="eq-row eq-row--target">
-      <div class="eq-row__label">Needed Pace<br><small>next ${fMonths(t.monthsRemaining)}</small></div>
-      <div class="eq-row__formula">
-        <div class="eq-total eq-total--target">${fRev(t.revenue)}<small>/mo</small></div>
-        <div class="eq-row__narrative">
-          ${ahead
-            ? `Your current pace <strong>already clears</strong> what's needed — ${fRev(Math.abs(t.paceDelta))}/mo cushion.`
-            : `<strong>${fRev(t.totalGap)}</strong> still needed this year. That's <strong>${fRev(t.paceDelta)}/mo more</strong> than your current pace.`}
-        </div>
-      </div>
-    </div>
-  `;
-
-  if (ahead) {
+  // BEHIND — show the three single-lever paths.
+  const eqT = a.equation.target;
+  if (!eqT || eqT.alreadyMet) {
     return `
       <div class="eq-wrap">
         ${currentRow}
-        ${targetRow}
-        <div class="eq-hint">Your trailing-12-month pace is high enough to hit the ${t.goalYear} goal. Raise the target or hold the line.</div>
       </div>
     `;
   }
 
-  // Three paths — each holds two levers at current and solves for the third
-  const clientDelta = t.clients - c.clients;
-  const dealsDelta  = t.dealsPerClient - c.dealsPerClient;
-  const priceDelta  = t.dealPrice - c.dealPrice;
+  const clientDelta = eqT.clients - c.clients;
+  const dealsDelta  = eqT.dealsPerClient - c.dealsPerClient;
+  const priceDelta  = eqT.dealPrice - c.dealPrice;
 
   const pathCard = (title, desc, rows) => `
     <div class="path-card">
@@ -3046,104 +3101,41 @@ function buildEquationHTML(eq) {
     </div>
   `;
 
-  const pathsHTML = `
-    <div class="eq-paths">
-      <div class="eq-paths__title">Three paths to hit ${fRev(t.revenue)}/mo over the next ${fMonths(t.monthsRemaining)}</div>
-      <div class="eq-paths__subtitle">Each path holds two levers at today's pace and solves for the third.</div>
-      <div class="path-grid">
-        ${pathCard('Add realtors', 'More people sending you deals',
-          [
-            { label: 'Active realtors / mo', value: fClients(t.clients), delta: `+${fClients(clientDelta)}`, highlight: true },
-            { label: 'Deals / realtor',       value: fDeals(c.dealsPerClient) },
-            { label: 'Avg deal price',        value: fPrice(c.dealPrice) }
-          ]
-        )}
-        ${pathCard('Close more per realtor', 'Same realtors, more repeat deals',
-          [
-            { label: 'Active realtors / mo', value: fClients(c.clients) },
-            { label: 'Deals / realtor',       value: fDeals(t.dealsPerClient), delta: `+${fDeals(dealsDelta)}`, highlight: true },
-            { label: 'Avg deal price',        value: fPrice(c.dealPrice) }
-          ]
-        )}
-        ${pathCard('Raise deal size', 'Target higher-value properties',
-          [
-            { label: 'Active realtors / mo', value: fClients(c.clients) },
-            { label: 'Deals / realtor',       value: fDeals(c.dealsPerClient) },
-            { label: 'Avg deal price',        value: fPrice(t.dealPrice), delta: `+${fPrice(priceDelta)}`, highlight: true }
-          ]
-        )}
-      </div>
-    </div>
-  `;
-
   return `
     <div class="eq-wrap">
       ${currentRow}
-      ${targetRow}
-      ${pathsHTML}
-    </div>
-  `;
-}
 
-function metricsNarrative(goal, m) {
-  const diff = m.revenueVariance;
-  const pct = goal.revenue ? Math.abs(diff / goal.revenue) * 100 : 0;
-  if (m.status === 'AHEAD') {
-    return `On pace for ${fmtMoney(m.projectedEOYRevenue, { decimals: 0 })} — <strong>${fmtMoney(diff, { decimals: 0 })}</strong> over your ${fmtMoney(goal.revenue, { decimals: 0 })} goal.`;
-  }
-  if (m.status === 'ON TRACK') {
-    return `Projected year-end revenue is <strong>${fmtMoney(m.projectedEOYRevenue, { decimals: 0 })}</strong> — within 5% of your ${fmtMoney(goal.revenue, { decimals: 0 })} goal.`;
-  }
-  if (m.status === 'SLIGHTLY BEHIND') {
-    return `Trending to ${fmtMoney(m.projectedEOYRevenue, { decimals: 0 })} — <strong>${fmtMoney(Math.abs(diff), { decimals: 0 })}</strong> (${pct.toFixed(0)}%) short of goal. Time to push.`;
-  }
-  if (m.status === 'BEHIND') {
-    return `Trending to ${fmtMoney(m.projectedEOYRevenue, { decimals: 0 })} — well short of ${fmtMoney(goal.revenue, { decimals: 0 })}. Need <strong>${fmtMoney(m.neededMonthlyRevenue, { decimals: 0 })}/month</strong> over the next ${Math.round(m.monthsRemaining)} months.`;
-  }
-  return 'No goal set.';
-}
-
-function goalCard(label, ytdStr, goalStr, pct, expectedPct) {
-  const safePct = Math.min(100, Math.max(0, pct));
-  const markerPct = Math.min(100, Math.max(0, expectedPct));
-  const aheadOfPace = pct >= expectedPct;
-  return `
-    <div class="goal-card" data-animate="card">
-      <div class="goal-card__label">${label}</div>
-      <div class="goal-card__ytd">${ytdStr}</div>
-      <div class="goal-card__goal">of ${goalStr}</div>
-      <div class="goal-bar">
-        <div class="goal-bar__fill" style="width: 0%" data-target-width="${safePct.toFixed(1)}"></div>
-        <div class="goal-bar__marker" style="left: ${markerPct}%" title="Expected pace: ${markerPct.toFixed(0)}%"></div>
+      <div class="eq-row eq-row--target">
+        <div class="eq-row__label">Needed Pace<br><small>next ${fMonths(a.monthsRemaining)}</small></div>
+        <div class="eq-row__formula">
+          <div class="eq-total eq-total--target">${fRev(eqT.revenue)}<small>/mo</small></div>
+          <div class="eq-row__narrative"><strong>${fRev(eqT.totalGap)}</strong> still needed this year — <strong>${fRev(a.paceDelta)}/mo more</strong> than your current pace.</div>
+        </div>
       </div>
-      <div class="goal-card__footer">
-        <span class="goal-card__pct">${pct.toFixed(0)}%</span>
-        <span class="goal-card__expected ${aheadOfPace ? 'is-ahead' : 'is-behind'}">
-          ${aheadOfPace ? '↑' : '↓'} ${Math.abs(pct - expectedPct).toFixed(0)}% vs pace
-        </span>
+
+      <div class="eq-paths">
+        <div class="eq-paths__title">Three paths to hit ${fRev(eqT.revenue)}/mo over the next ${fMonths(a.monthsRemaining)}</div>
+        <div class="eq-paths__subtitle">Each path holds two levers at today's pace and solves for the third.</div>
+        <div class="path-grid">
+          ${pathCard('Add realtors', 'More people sending you deals', [
+            { label: 'Active realtors / mo', value: fClients(eqT.clients), delta: `+${fClients(clientDelta)}`, highlight: true },
+            { label: 'Deals / realtor',       value: fDeals(c.dealsPerClient) },
+            { label: 'Avg deal price',        value: fPrice(c.dealPrice) }
+          ])}
+          ${pathCard('Close more per realtor', 'Same realtors, more repeat deals', [
+            { label: 'Active realtors / mo', value: fClients(c.clients) },
+            { label: 'Deals / realtor',       value: fDeals(eqT.dealsPerClient), delta: `+${fDeals(dealsDelta)}`, highlight: true },
+            { label: 'Avg deal price',        value: fPrice(c.dealPrice) }
+          ])}
+          ${pathCard('Raise deal size', 'Target higher-value properties', [
+            { label: 'Active realtors / mo', value: fClients(c.clients) },
+            { label: 'Deals / realtor',       value: fDeals(c.dealsPerClient) },
+            { label: 'Avg deal price',        value: fPrice(eqT.dealPrice), delta: `+${fPrice(priceDelta)}`, highlight: true }
+          ])}
+        </div>
       </div>
     </div>
   `;
-}
-
-function paceRow(label, current, needed, kind) {
-  const fmt = (v) => {
-    if (v === null || v === undefined) return '—';
-    if (kind === 'money') return fmtMoney(v, { decimals: 0 });
-    return (Number(v).toFixed(1));
-  };
-  let delta = '';
-  if (current !== null && current !== undefined && needed > 0) {
-    const pct = ((current - needed) / needed) * 100;
-    const up = pct >= 0;
-    delta = `<span class="delta ${up ? 'delta--up' : 'delta--down'}">${up ? '↑' : '↓'} ${Math.abs(pct).toFixed(0)}% ${up ? '✓' : ''}</span>`;
-  }
-  return `<tr>
-    <td>${label}</td>
-    <td class="num">${fmt(current)}</td>
-    <td class="num">${fmt(needed)}</td>
-    <td class="num">${delta}</td>
-  </tr>`;
 }
 
 function scenarioCard(title, subtitle, data, tone) {
@@ -3173,7 +3165,8 @@ Views.goalsPost = function(params = {}) {
   // GSAP entry animations
   Animate.staggerIn('[data-animate="card"]', { delay: 0.1, stagger: 0.08 });
   Animate.staggerIn('[data-animate="scenario"]', { delay: 0.2, stagger: 0.08 });
-  Animate.growBars('.goal-bar__fill', { baseDelay: 0.5, stagger: 0.1, duration: 1.1 });
+  Animate.growBars('.ytd-bar__fill', { baseDelay: 0.5, stagger: 0.1, duration: 1.1 });
+  Animate.growBars('.proj-bar__fill', { baseDelay: 0.4, duration: 1.2 });
 
   // Edit / set goals buttons (both header button and empty-state button)
   document.querySelectorAll('[data-action="open-goals-modal"]').forEach(btn => {

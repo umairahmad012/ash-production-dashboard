@@ -945,25 +945,34 @@ function daysInYear(year) {
   return ((year % 4 === 0 && year % 100 !== 0) || year % 400 === 0) ? 366 : 365;
 }
 
-// computeTrackerMetrics
-// Given a target year and its goals, compute YTD actuals, pace,
-// required pace, projected EOY, and status classification.
-function computeTrackerMetrics(year, goal, today = new Date()) {
-  const deals = Store.getDeals();
+/* computeGoalAnalysis
+   Single source of truth for the Goals page. One coherent story:
+     - YTD actuals (revenue, deals, unique realtors)
+     - "Your pace" = trailing 12 complete months (seasonally honest)
+     - "Forward capacity" = pace × months_remaining
+     - "Projected year-end" = YTD + forward capacity
+     - Status = projected vs goal
+     - Needed pace = (goal − YTD) / months_remaining
+     - Equation decomposition: pace = active_realtors × deals_per_realtor × deal_price
+     - Three single-lever paths when behind
+
+   This replaces the older last-3-months baseline that was giving misleading
+   "BEHIND" readings for seasonal businesses when winter months alone were
+   used to project the year.
+------------------------------------------------------------------------------ */
+function computeGoalAnalysis(goal, year, today = new Date()) {
   const yearStart = new Date(year, 0, 1);
   const yearEnd   = new Date(year, 11, 31, 23, 59, 59);
   const diy = daysInYear(year);
-
-  // How far through the year are we? Clamp at year boundaries so future years
-  // don't show "negative" pace and past years always reflect full year.
   const now = (today > yearEnd) ? yearEnd : (today < yearStart ? yearStart : today);
   const daysElapsed = Math.max(0, (now - yearStart) / 86400000);
   const daysRemaining = Math.max(0, diy - daysElapsed);
   const monthsElapsed = daysElapsed / 30.437;
-  const monthsRemaining = 12 - monthsElapsed;
+  const monthsRemaining = Math.max(0, 12 - monthsElapsed);
+  const safeRemaining = Math.max(0.5, monthsRemaining);
 
-  // YTD actuals for this year
-  const ytdDeals = deals.filter(d => {
+  // ── YTD actuals (within the goal year, up to now) ───────────────────────
+  const ytdDeals = Store.getDeals().filter(d => {
     if (!d.disbursementDate) return false;
     const dt = new Date(d.disbursementDate);
     return dt >= yearStart && dt <= now;
@@ -971,64 +980,56 @@ function computeTrackerMetrics(year, goal, today = new Date()) {
   const ytdRevenue = round2(ytdDeals.reduce((s, d) => s + Number(d.revenue || 0), 0));
   const ytdDealCount = ytdDeals.length;
   const ytdRealtors = new Set();
-  ytdDeals.forEach(d => {
+  for (const d of ytdDeals) {
     if (d.client && d.client.trim()) ytdRealtors.add(d.client.trim().toLowerCase());
-    // Count both-sides deals as 2 distinct realtors
     if ((d.clientAttribution || '') === 'Both') {
       if (d.listingAgent) ytdRealtors.add(d.listingAgent.trim().toLowerCase());
       if (d.sellingAgent) ytdRealtors.add(d.sellingAgent.trim().toLowerCase());
     }
-  });
+  }
   const ytdRealtorCount = ytdRealtors.size;
 
-  // Current pace: use last 3 months of actuals within the year for responsiveness.
-  // Falls back to YTD average if < 3 months elapsed.
-  const last3MoStart = new Date(now);
-  last3MoStart.setMonth(last3MoStart.getMonth() - 3);
-  const recentDeals = ytdDeals.filter(d => new Date(d.disbursementDate) >= last3MoStart);
-  const recentMonthsElapsed = Math.max(1, Math.min(3, monthsElapsed));
-  const last3MoRevenue = recentDeals.reduce((s, d) => s + Number(d.revenue || 0), 0);
-  const currentMonthlyRevenue = monthsElapsed >= 3
-    ? round2(last3MoRevenue / recentMonthsElapsed)
-    : (monthsElapsed > 0 ? round2(ytdRevenue / monthsElapsed) : 0);
-  const currentMonthlyDeals = monthsElapsed >= 3
-    ? round2(recentDeals.length / recentMonthsElapsed)
-    : (monthsElapsed > 0 ? round2(ytdDealCount / monthsElapsed) : 0);
+  // ── Pace: trailing 12 complete months (from Business Equation) ──────────
+  // Call computeBusinessEquation as the single source for pace + needed-pace,
+  // so the narrative and equation panel always agree exactly.
+  const eq = computeBusinessEquation(goal, year, today);
+  const pace = eq.current;  // { revenue, clients, deals, dealPrice, dealsPerClient, windowStart, windowEnd }
 
-  // Required pace to hit goal in the remaining time
-  const revenueGap   = Math.max(0, (goal?.revenue || 0) - ytdRevenue);
-  const dealsGap     = Math.max(0, (goal?.deals || 0) - ytdDealCount);
-  const realtorsGap  = Math.max(0, (goal?.activeRealtors || 0) - ytdRealtorCount);
-  const safeRemaining = Math.max(0.5, monthsRemaining);  // avoid div-by-zero near year end
-  const neededMonthlyRevenue = round2(revenueGap / safeRemaining);
-  const neededMonthlyDeals   = round2(dealsGap / safeRemaining);
-  const neededMonthlyRealtors = round2(realtorsGap / safeRemaining);
+  // ── Forward capacity at current pace ────────────────────────────────────
+  const forwardRevenue = round2(pace.revenue * monthsRemaining);
+  const forwardDeals   = Math.round(pace.deals * monthsRemaining);
 
-  // End-of-year projection if current pace holds
-  const projectedEOYRevenue = round2(ytdRevenue + currentMonthlyRevenue * monthsRemaining);
-  const projectedEOYDeals   = Math.round(ytdDealCount + currentMonthlyDeals * monthsRemaining);
-  const revenueVariance     = round2(projectedEOYRevenue - (goal?.revenue || 0));
-  const dealsVariance       = projectedEOYDeals - (goal?.deals || 0);
+  // ── Projected year-end ──────────────────────────────────────────────────
+  const projectedRevenue = round2(ytdRevenue + forwardRevenue);
+  const projectedDeals   = ytdDealCount + forwardDeals;
 
-  // Progress percentages
-  const revenuePct  = goal?.revenue      ? round2((ytdRevenue / goal.revenue) * 100) : 0;
-  const dealsPct    = goal?.deals        ? round2((ytdDealCount / goal.deals) * 100) : 0;
-  const realtorsPct = goal?.activeRealtors ? round2((ytdRealtorCount / goal.activeRealtors) * 100) : 0;
-  const expectedPacePct = round2((daysElapsed / diy) * 100);
+  // ── Gap analysis (reuse the Business Equation's target so values match) ─
+  const revenueGap = eq.target ? eq.target.totalGap : Math.max(0, round2((goal?.revenue || 0) - ytdRevenue));
+  const dealsGap   = Math.max(0, (goal?.deals || 0) - ytdDealCount);
+  const realtorsGap = Math.max(0, (goal?.activeRealtors || 0) - ytdRealtorCount);
+  const neededMonthlyRevenue  = eq.target ? eq.target.revenue : 0;
+  const neededMonthlyDeals    = dealsGap > 0 ? round2(dealsGap / safeRemaining) : 0;
+  const neededMonthlyRealtors = realtorsGap > 0 ? round2(realtorsGap / safeRemaining) : 0;
 
-  // Status classification (driven by revenue projection)
-  let status = 'ON TRACK';
-  let statusTone = 'forest';  // forest | gold | amber | red
+  // ── Progress percentages ────────────────────────────────────────────────
+  const revenuePct      = goal?.revenue       ? round2((ytdRevenue / goal.revenue) * 100) : 0;
+  const dealsPct        = goal?.deals         ? round2((ytdDealCount / goal.deals) * 100) : 0;
+  const realtorsPct     = goal?.activeRealtors ? round2((ytdRealtorCount / goal.activeRealtors) * 100) : 0;
+  const yearProgressPct = round2((daysElapsed / diy) * 100);
+
+  // ── Status based on PROJECTED revenue (trailing-pace projection) ────────
+  let status = 'NO GOAL SET';
+  let statusTone = 'neutral';
   if (goal?.revenue) {
-    const ratio = projectedEOYRevenue / goal.revenue;
-    if (ratio >= 1.05)      { status = 'AHEAD';           statusTone = 'gold'; }
+    const ratio = projectedRevenue / goal.revenue;
+    if (ratio >= 1.10)      { status = 'AHEAD';           statusTone = 'gold'; }
     else if (ratio >= 0.95) { status = 'ON TRACK';        statusTone = 'forest'; }
     else if (ratio >= 0.80) { status = 'SLIGHTLY BEHIND'; statusTone = 'amber'; }
     else                    { status = 'BEHIND';          statusTone = 'red'; }
-  } else {
-    status = 'NO GOAL SET';
-    statusTone = 'neutral';
   }
+  const revenueVariance = round2(projectedRevenue - (goal?.revenue || 0));
+  const paceDelta = round2(neededMonthlyRevenue - pace.revenue);  // >0 = need to lift pace
+  const aheadOfPace = !!(goal?.revenue && paceDelta <= 0);
 
   return {
     year, today: now,
@@ -1036,27 +1037,57 @@ function computeTrackerMetrics(year, goal, today = new Date()) {
     daysRemaining: Math.round(daysRemaining),
     monthsElapsed: round2(monthsElapsed),
     monthsRemaining: round2(monthsRemaining),
-    expectedPacePct,
-    ytdRevenue,
-    ytdDealCount,
-    ytdRealtorCount,
-    currentMonthlyRevenue,
-    currentMonthlyDeals,
-    revenueGap,
-    dealsGap,
-    realtorsGap,
-    neededMonthlyRevenue,
-    neededMonthlyDeals,
-    neededMonthlyRealtors,
-    projectedEOYRevenue,
-    projectedEOYDeals,
+    yearProgressPct,
+
+    // YTD actuals
+    ytdRevenue, ytdDealCount, ytdRealtorCount,
+
+    // Pace (trailing 12 complete months)
+    pace,  // { revenue, clients, deals, dealPrice, dealsPerClient, windowStart, windowEnd, activeMonths }
+
+    // Forward / projection
+    forwardRevenue, forwardDeals,
+    projectedRevenue, projectedDeals,
     revenueVariance,
-    dealsVariance,
-    revenuePct,
-    dealsPct,
-    realtorsPct,
-    status,
-    statusTone
+
+    // Gap
+    revenueGap, dealsGap, realtorsGap,
+    neededMonthlyRevenue, neededMonthlyDeals, neededMonthlyRealtors,
+    paceDelta, aheadOfPace,
+
+    // Progress
+    revenuePct, dealsPct, realtorsPct,
+
+    // Status
+    status, statusTone,
+
+    // Equation paths (when behind, show the three single-lever options)
+    equation: eq
+  };
+}
+
+/* Legacy alias — some old code paths may still reference this. Returns the
+   same shape the old tracker produced, derived from the unified analysis. */
+function computeTrackerMetrics(year, goal, today = new Date()) {
+  const a = computeGoalAnalysis(goal, year, today);
+  return {
+    year: a.year, today: a.today,
+    daysElapsed: a.daysElapsed, daysRemaining: a.daysRemaining,
+    monthsElapsed: a.monthsElapsed, monthsRemaining: a.monthsRemaining,
+    expectedPacePct: a.yearProgressPct,
+    ytdRevenue: a.ytdRevenue, ytdDealCount: a.ytdDealCount, ytdRealtorCount: a.ytdRealtorCount,
+    currentMonthlyRevenue: a.pace.revenue,
+    currentMonthlyDeals: a.pace.deals,
+    revenueGap: a.revenueGap, dealsGap: a.dealsGap, realtorsGap: a.realtorsGap,
+    neededMonthlyRevenue: a.neededMonthlyRevenue,
+    neededMonthlyDeals: a.neededMonthlyDeals,
+    neededMonthlyRealtors: a.neededMonthlyRealtors,
+    projectedEOYRevenue: a.projectedRevenue,
+    projectedEOYDeals: a.projectedDeals,
+    revenueVariance: a.revenueVariance,
+    dealsVariance: a.projectedDeals - (goal?.deals || 0),
+    revenuePct: a.revenuePct, dealsPct: a.dealsPct, realtorsPct: a.realtorsPct,
+    status: a.status, statusTone: a.statusTone
   };
 }
 

@@ -3645,6 +3645,179 @@ body.is-signed-in .auth-gate { display: none; }
 }
 .admin-dim { color: var(--mid-grey); }
 
+/* ==========================================================================
+   Goal tracker — unified layout (projection row, YTD grid, equation, paths)
+   ========================================================================== */
+
+/* Projection: projected year-end vs goal, with proportional bar */
+.proj-wrap {
+  padding: 6px 32px 22px;
+}
+.proj-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 28px;
+  padding: 14px 0 20px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 18px;
+}
+.proj-col {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.proj-col__label {
+  font-family: var(--sans);
+  font-size: 10px;
+  letter-spacing: 2.5px;
+  text-transform: uppercase;
+  font-weight: 700;
+  color: var(--forest-mid);
+}
+.proj-col--target .proj-col__label { color: var(--rich-gold); }
+.proj-col__value {
+  font-family: var(--serif);
+  font-size: 38px;
+  font-weight: 400;
+  color: var(--forest-deep);
+  letter-spacing: -0.6px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.proj-col--target .proj-col__value { color: var(--rich-gold); }
+.proj-col__hint {
+  font-family: var(--sans);
+  font-size: 11px;
+  color: var(--mid-grey);
+  letter-spacing: 0.3px;
+  line-height: 1.5;
+}
+
+.proj-bar {
+  position: relative;
+  height: 10px;
+  background: rgba(26, 60, 52, 0.08);
+  border-radius: 6px;
+  overflow: visible;
+}
+.proj-bar__fill {
+  height: 100%;
+  border-radius: 6px;
+  transition: width 0.3s ease;
+}
+.proj-bar__fill--gold    { background: linear-gradient(90deg, var(--rich-gold), var(--gold-mid)); }
+.proj-bar__fill--forest  { background: linear-gradient(90deg, var(--forest-mid), var(--forest-primary)); }
+.proj-bar__fill--amber   { background: linear-gradient(90deg, #E4A04C, #D27A3C); }
+.proj-bar__fill--red     { background: linear-gradient(90deg, #D2683C, #B04A3C); }
+.proj-bar__fill--neutral { background: var(--mid-grey); }
+
+.proj-bar__marker {
+  position: absolute;
+  left: 100%;
+  top: -2px;
+  bottom: -2px;
+  width: 2px;
+  background: var(--rich-gold);
+  transform: translateX(-1px);
+}
+.proj-bar__marker-label {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  font-family: var(--sans);
+  font-size: 9px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--rich-gold);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+/* YTD progress grid */
+.ytd-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 18px;
+  padding: 14px 32px 22px;
+  border-bottom: 1px solid var(--line);
+}
+.ytd-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ytd-card__label {
+  font-family: var(--sans);
+  font-size: 10px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  font-weight: 700;
+  color: var(--rich-gold);
+  margin-bottom: 2px;
+}
+.ytd-card__ytd {
+  font-family: var(--serif);
+  font-size: 28px;
+  font-weight: 400;
+  color: var(--forest-deep);
+  line-height: 1;
+  letter-spacing: -0.5px;
+  font-variant-numeric: tabular-nums;
+}
+.ytd-card__goal {
+  font-family: var(--sans);
+  font-size: 11px;
+  color: var(--mid-grey);
+  letter-spacing: 0.3px;
+}
+.ytd-bar {
+  position: relative;
+  height: 6px;
+  background: rgba(26, 60, 52, 0.08);
+  border-radius: 4px;
+  margin-top: 6px;
+  overflow: visible;
+}
+.ytd-bar__fill {
+  height: 100%;
+  background: var(--forest-primary);
+  border-radius: 4px;
+}
+.ytd-bar__marker {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 2px;
+  background: var(--rich-gold);
+  opacity: 0.7;
+  transform: translateX(-1px);
+}
+.ytd-card__footer {
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--sans);
+  font-size: 10px;
+  letter-spacing: 0.4px;
+  margin-top: 6px;
+}
+.ytd-card__pct {
+  color: var(--forest-deep);
+  font-weight: 600;
+}
+.ytd-card__year {
+  color: var(--mid-grey);
+}
+
+/* The equation section is re-used inside the goal tracker — make sure the
+   boundary reads cleanly */
+.goal-tracker .eq-wrap { padding-top: 22px; }
+
+@media (max-width: 900px) {
+  .proj-row { grid-template-columns: 1fr; gap: 18px; }
+  .ytd-grid { grid-template-columns: 1fr; }
+}
+
 .admin-loading {
   display: flex;
   flex-direction: column;
