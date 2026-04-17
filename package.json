@@ -1,0 +1,11 @@
+{
+  "name": "ash-production-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Production CRM for Ashraf Abusamak — auth-gated sync via Netlify Functions + Blobs",
+  "type": "module",
+  "dependencies": {
+    "@clerk/backend": "^1.29.0",
+    "@netlify/blobs": "^8.2.0"
+  }
+}

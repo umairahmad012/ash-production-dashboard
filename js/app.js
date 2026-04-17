@@ -177,12 +177,41 @@ const App = {
   currentRoute: 'dashboard',
   currentParams: {},
 
-  init() {
-    Store.init();
+  async init() {
+    await Store.init();
     this._paintNavIcons();
+    this._paintSidebarUser();
+    this._wireSidebarGear();
     window.addEventListener('hashchange', () => this._routeFromHash());
     this._routeFromHash();
     this._wireModalCloses();
+  },
+
+  _paintSidebarUser() {
+    if (!window.Auth?.user) return;
+    const u = window.Auth.user;
+    const el = document.getElementById('sidebarUser');
+    const avatar = document.getElementById('sidebarUserAvatar');
+    const name = document.getElementById('sidebarUserName');
+    const role = document.getElementById('sidebarUserRole');
+    const gear = document.getElementById('sidebarGearBtn');
+    if (!el) return;
+    el.hidden = false;
+    if (avatar) {
+      if (u.imageUrl) { avatar.src = u.imageUrl; avatar.hidden = false; }
+      else { avatar.hidden = true; }
+    }
+    if (name) name.textContent = (u.firstName || u.lastName) ? `${u.firstName || ''} ${u.lastName || ''}`.trim() : u.email;
+    if (role) role.textContent = u.role;
+    if (gear && u.role === 'admin') {
+      gear.hidden = false;
+      gear.innerHTML = icon('settings', 16);
+    }
+  },
+
+  _wireSidebarGear() {
+    const btn = document.getElementById('sidebarGearBtn');
+    if (btn) btn.addEventListener('click', () => this.openAdminModal());
   },
 
   _paintNavIcons() {
@@ -847,4 +876,172 @@ function downloadCSV(filename, rows) {
   URL.revokeObjectURL(url);
 }
 
-document.addEventListener('DOMContentLoaded', () => App.init());
+/* ==========================================================================
+   Admin modal — list/add/remove users, assign roles
+   ========================================================================== */
+
+App.openAdminModal = async function() {
+  this.openModal(adminModalLoadingHTML());
+  document.querySelector('.modal__card').classList.add('modal__card--wide');
+  let dir;
+  try {
+    const resp = await Auth.apiFetch('/api/users');
+    if (!resp.ok) throw new Error('List failed: ' + resp.status);
+    dir = await resp.json();
+  } catch (e) {
+    document.getElementById('modalBody').innerHTML = `<div class="admin-error">Could not load users: ${escapeHtml(e.message)}</div>`;
+    return;
+  }
+  document.getElementById('modalBody').innerHTML = adminModalHTML(dir, Auth.user);
+  App._wireAdminModal();
+};
+
+App._wireAdminModal = function() {
+  const addForm = document.getElementById('adminAddForm');
+  if (addForm) {
+    addForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const fd = new FormData(addForm);
+      const email = String(fd.get('email') || '').trim();
+      const role = String(fd.get('role') || 'editor');
+      if (!email) return;
+      const resp = await Auth.apiFetch('/api/users', {
+        method: 'POST',
+        body: JSON.stringify({ email, role })
+      });
+      if (resp.ok) { App.toast('User saved'); App.openAdminModal(); }
+      else App.toast('Save failed: ' + resp.status);
+    });
+  }
+
+  document.querySelectorAll('[data-admin-remove]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const email = btn.getAttribute('data-admin-remove');
+      if (!confirm(`Remove ${email} from the CRM?`)) return;
+      const resp = await Auth.apiFetch('/api/users/' + encodeURIComponent(email), { method: 'DELETE' });
+      if (resp.ok) { App.toast('User removed'); App.openAdminModal(); }
+      else App.toast('Remove failed: ' + resp.status);
+    });
+  });
+
+  document.querySelectorAll('[data-admin-role]').forEach(sel => {
+    sel.addEventListener('change', async () => {
+      const email = sel.getAttribute('data-admin-role');
+      const role = sel.value;
+      const resp = await Auth.apiFetch('/api/users', {
+        method: 'POST',
+        body: JSON.stringify({ email, role })
+      });
+      if (resp.ok) App.toast(`${email} → ${role}`);
+      else App.toast('Update failed: ' + resp.status);
+    });
+  });
+
+  document.getElementById('adminSignOutBtn')?.addEventListener('click', () => Auth.signOut());
+  document.getElementById('adminClerkLink')?.addEventListener('click', (e) => {
+    e.preventDefault();
+    window.open('https://dashboard.clerk.com', '_blank', 'noopener');
+  });
+};
+
+function adminModalLoadingHTML() {
+  return `<div class="admin-loading"><div class="auth-spinner"></div><div>Loading admin center…</div></div>`;
+}
+
+function adminModalHTML(dir, me) {
+  const users = (dir.users || []).slice().sort((a, b) => a.email.localeCompare(b.email));
+  const fmtDate = (iso) => {
+    if (!iso) return '—';
+    try { return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }); }
+    catch { return iso; }
+  };
+
+  const rows = users.map(u => {
+    const isMe = u.email.toLowerCase() === me.email.toLowerCase();
+    const displayName = ((u.firstName || '') + ' ' + (u.lastName || '')).trim() || '—';
+    return `
+      <tr>
+        <td>
+          <div class="admin-user">
+            ${u.imageUrl ? `<img class="admin-user__avatar" src="${escapeHtml(u.imageUrl)}" alt="" />` : `<div class="admin-user__avatar admin-user__avatar--placeholder">${escapeHtml((u.email[0]||'?').toUpperCase())}</div>`}
+            <div>
+              <div class="admin-user__email">${escapeHtml(u.email)}${isMe ? ' <span class="admin-user__you">(you)</span>' : ''}</div>
+              <div class="admin-user__name">${escapeHtml(displayName)}</div>
+            </div>
+          </div>
+        </td>
+        <td>
+          <select class="admin-role-select" data-admin-role="${escapeHtml(u.email)}" ${isMe ? 'disabled' : ''}>
+            <option value="admin"  ${u.role === 'admin'  ? 'selected' : ''}>Admin</option>
+            <option value="editor" ${u.role === 'editor' ? 'selected' : ''}>Editor</option>
+            <option value="viewer" ${u.role === 'viewer' ? 'selected' : ''}>Viewer</option>
+          </select>
+        </td>
+        <td class="num">${fmtDate(u.lastSeenAt)}</td>
+        <td class="num">${fmtDate(u.addedAt)}</td>
+        <td>
+          ${isMe ? '' : `<button type="button" class="btn-link btn-link--danger" data-admin-remove="${escapeHtml(u.email)}">Remove</button>`}
+        </td>
+      </tr>
+    `;
+  }).join('');
+
+  return `
+    <div class="admin-modal">
+      <header class="admin-modal__head">
+        <div>
+          <div class="eyebrow">Admin Center</div>
+          <h2>Team access</h2>
+          <p class="admin-modal__sub">Invited users sign in with Google. Roles: <strong>Admin</strong> manages team · <strong>Editor</strong> writes data · <strong>Viewer</strong> reads only.</p>
+        </div>
+      </header>
+
+      <form class="admin-add" id="adminAddForm">
+        <label class="admin-add__label" for="adminAddEmail">Invite by email</label>
+        <div class="admin-add__row">
+          <input type="email" id="adminAddEmail" name="email" required placeholder="realtor@example.com" />
+          <select name="role">
+            <option value="editor">Editor</option>
+            <option value="admin">Admin</option>
+            <option value="viewer">Viewer</option>
+          </select>
+          <button type="submit" class="btn btn--gold">Invite</button>
+        </div>
+        <div class="admin-add__hint">They'll see the CRM the next time they sign in with Google using this email.</div>
+      </form>
+
+      <div class="admin-table-wrap">
+        <table class="admin-table">
+          <thead>
+            <tr>
+              <th>User</th>
+              <th>Role</th>
+              <th class="num">Last seen</th>
+              <th class="num">Added</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>${rows || '<tr><td colspan="5" class="admin-empty">No users yet.</td></tr>'}</tbody>
+        </table>
+      </div>
+
+      <footer class="admin-modal__foot">
+        <div>
+          <a href="https://dashboard.clerk.com" id="adminClerkLink" class="btn-link">Open Clerk dashboard →</a>
+          <span class="admin-modal__foothint">for password resets, session activity, and security settings</span>
+        </div>
+        <button type="button" class="btn btn--ghost" id="adminSignOutBtn">Sign out</button>
+      </footer>
+    </div>
+  `;
+}
+
+/* ==========================================================================
+   Bootstrap: sign-in gate → app init
+   ========================================================================== */
+
+document.addEventListener('DOMContentLoaded', async () => {
+  const { authorized } = await Auth.init();
+  if (!authorized) return;
+  App.init();
+});

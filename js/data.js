@@ -45,6 +45,7 @@ const Settings = {
     const next = { ...cur, ...patch, fileFees: { ...cur.fileFees, ...(patch.fileFees || {}) } };
     this._cache = next;
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(next));
+    if (window.Store && typeof window.Store._scheduleCloudSync === 'function') window.Store._scheduleCloudSync();
     return next;
   },
   resetFileFees() {
@@ -84,21 +85,81 @@ function round2(n) { return Math.round(n * 100) / 100; }
 
 const Store = {
   state: { deals: [], expenses: [] },
+  _cloudSyncTimer: null,
+  _lastCloudSaveAt: null,
+  _cloudReady: false,
+  _suppressCloudSync: false,
 
-  init() {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
+  /**
+   * Hydrate order (first success wins):
+   *   1. Cloud blob via /api/data (when Auth.user exists)
+   *   2. localStorage (offline cache)
+   *   3. Seed data
+   * After hydrate, every _save() writes localStorage immediately and schedules
+   * a debounced cloud push so the UI stays instant.
+   */
+  async init() {
+    this._suppressCloudSync = true;
+    let hydrated = false;
+
+    // 1. Cloud
+    if (window.Auth && window.Auth.user) {
       try {
-        this.state = JSON.parse(raw);
-        if (!Array.isArray(this.state.deals)) this.state.deals = [];
-        if (!Array.isArray(this.state.expenses)) this.state.expenses = [];
+        const resp = await window.Auth.apiFetch('/api/data');
+        if (resp.ok) {
+          const { state } = await resp.json();
+          if (state && typeof state === 'object') {
+            if (state.data && Array.isArray(state.data.deals)) {
+              this.state = state.data;
+            }
+            if (state.settings) {
+              Settings._cache = {
+                fileFees: { ...DEFAULT_FILE_FEES, ...(state.settings.fileFees || {}) }
+              };
+              try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(Settings._cache)); } catch {}
+            }
+            if (state.goals) {
+              Goals._cache = state.goals;
+              try { localStorage.setItem(GOALS_KEY, JSON.stringify(state.goals)); } catch {}
+            }
+            if (Array.isArray(this.state.deals)) hydrated = true;
+          }
+          this._cloudReady = true;
+        } else if (resp.status === 403) {
+          console.warn('Forbidden from /api/data — running offline');
+        } else {
+          console.warn('Cloud hydrate returned', resp.status);
+        }
       } catch (e) {
-        console.warn('Failed to parse saved data, reseeding', e);
-        this._seed();
+        console.warn('Cloud hydrate error', e);
       }
-    } else {
-      this._seed();
     }
+
+    // 2. localStorage fallback
+    if (!hydrated) {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (raw) {
+        try {
+          this.state = JSON.parse(raw);
+          if (!Array.isArray(this.state.deals)) this.state.deals = [];
+          if (!Array.isArray(this.state.expenses)) this.state.expenses = [];
+          hydrated = true;
+        } catch (e) {
+          console.warn('Failed to parse saved data, reseeding', e);
+        }
+      }
+    }
+
+    // 3. Seed
+    if (!hydrated) {
+      this._seed();
+      // Push seed to cloud so other devices get consistent initial state
+      if (this._cloudReady) this._scheduleCloudSync();
+    } else {
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(this.state)); } catch {}
+    }
+
+    this._suppressCloudSync = false;
   },
 
   _seed() {
@@ -107,15 +168,49 @@ const Store = {
       deals: JSON.parse(JSON.stringify(seed.deals)),
       expenses: JSON.parse(JSON.stringify(seed.expenses))
     };
-    this._save();
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(this.state)); } catch {}
   },
 
   reseed() {
     this._seed();
+    this._scheduleCloudSync();
   },
 
   _save() {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(this.state));
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(this.state)); } catch {}
+    this._scheduleCloudSync();
+  },
+
+  _scheduleCloudSync() {
+    if (this._suppressCloudSync) return;
+    if (!window.Auth || !window.Auth.user) return;
+    clearTimeout(this._cloudSyncTimer);
+    this._cloudSyncTimer = setTimeout(() => this._cloudSync(), 600);
+  },
+
+  async _cloudSync() {
+    if (!window.Auth || !window.Auth.user) return;
+    const payload = {
+      state: {
+        data: this.state,
+        settings: Settings._cache || Settings.load(),
+        goals: Goals._cache || Goals._load()
+      }
+    };
+    try {
+      const resp = await window.Auth.apiFetch('/api/data', {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      });
+      if (!resp.ok) {
+        const msg = resp.status === 403 ? 'Read-only role' : ('Cloud save failed: ' + resp.status);
+        if (window.App?.toast) window.App.toast(msg);
+      } else {
+        this._lastCloudSaveAt = new Date();
+      }
+    } catch (e) {
+      if (window.App?.toast) window.App.toast('Offline — changes kept locally');
+    }
   },
 
   /* ---------- Deals ---------- */
@@ -797,6 +892,7 @@ const Goals = {
 
   _save() {
     localStorage.setItem(GOALS_KEY, JSON.stringify(this._cache || {}));
+    if (window.Store && typeof window.Store._scheduleCloudSync === 'function') window.Store._scheduleCloudSync();
   },
 
   // Get goals for a specific year (or null if none)

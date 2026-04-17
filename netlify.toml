@@ -1,6 +1,18 @@
 [build]
   # Static site — nothing to build. Netlify serves files from the publish dir as-is.
   publish = "."
+  # Serverless functions live here
+  functions = "netlify/functions"
+
+[functions]
+  # Use the esbuild bundler and Node 20 runtime for the ESM functions
+  node_bundler = "esbuild"
+
+# Route /api/* to the api function
+[[redirects]]
+  from = "/api/*"
+  to = "/.netlify/functions/api/:splat"
+  status = 200
 
 [build.processing]
   skip_processing = false
