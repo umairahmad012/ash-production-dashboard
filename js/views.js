@@ -2780,7 +2780,7 @@ Views.goals = function(query = {}) {
   const goal = Goals.get(year);
   const monthlyStats = Store.getMonthlyStats();
   const metrics = goal ? computeTrackerMetrics(year, goal, today) : null;
-  const equation = computeBusinessEquation(goal, today);
+  const equation = computeBusinessEquation(goal, year, today);
   const availableYears = Array.from(new Set([...Goals.years(), year, today.getFullYear(), today.getFullYear() + 1])).sort();
 
   const horizonMap = { '1m': 1, '6m': 6, '1y': 12, '5y': 60 };
@@ -2930,7 +2930,7 @@ Views.goals = function(query = {}) {
 function buildEquationHTML(eq) {
   const c = eq.current;
 
-  if (!c || c.historyMonths === 0) {
+  if (!c || (c.activeMonths === 0 && c.revenue === 0)) {
     return `
       <div class="empty-state">
         <div class="empty-state__eyebrow">No recent activity</div>
@@ -2944,6 +2944,11 @@ function buildEquationHTML(eq) {
   const fDeals   = n => n === null || n === undefined ? '—' : Number(n).toLocaleString('en-US', { maximumFractionDigits: 2 });
   const fPrice   = n => n === null || n === undefined ? '—' : fmtMoney(n, { decimals: 0 });
   const fRev     = n => n === null || n === undefined ? '—' : fmtMoney(n, { decimals: 0 });
+  const fMonths  = n => {
+    if (n === null || n === undefined) return '—';
+    const whole = Math.round(n);
+    return whole === 1 ? '1 month' : whole + ' months';
+  };
 
   const lever = (value, label) => `
     <div class="eq-lever">
@@ -2954,7 +2959,7 @@ function buildEquationHTML(eq) {
 
   const currentRow = `
     <div class="eq-row">
-      <div class="eq-row__label">Your Pace<br><small>trailing 12 mo</small></div>
+      <div class="eq-row__label">Your Pace<br><small>avg ${c.windowStart} – ${c.windowEnd}</small></div>
       <div class="eq-row__formula">
         <div class="eq-total">${fRev(c.revenue)}<small>/mo</small></div>
         <span class="eq-equals">=</span>
@@ -2977,33 +2982,48 @@ function buildEquationHTML(eq) {
   }
 
   const t = eq.target;
-  const aheadOfPace = t.revenueGap <= 0;
+
+  if (t.alreadyMet) {
+    return `
+      <div class="eq-wrap">
+        ${currentRow}
+        <div class="eq-row eq-row--target">
+          <div class="eq-row__label">Goal Status</div>
+          <div class="eq-row__formula">
+            <div class="eq-row__narrative"><strong>${fRev(t.goalRevenue)}</strong> target already hit — you've booked <strong>${fRev(t.ytdRevenue)}</strong> so far in ${t.goalYear}. Consider raising the goal.</div>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  const ahead = t.paceDelta <= 0;
 
   const targetRow = `
     <div class="eq-row eq-row--target">
-      <div class="eq-row__label">To Hit Goal<br><small>${fRev(t.revenue * 12)}/yr</small></div>
+      <div class="eq-row__label">Needed Pace<br><small>next ${fMonths(t.monthsRemaining)}</small></div>
       <div class="eq-row__formula">
         <div class="eq-total eq-total--target">${fRev(t.revenue)}<small>/mo</small></div>
         <div class="eq-row__narrative">
-          ${aheadOfPace
-            ? `You're <strong>${fRev(Math.abs(t.revenueGap))}</strong>/mo ahead of the target pace.`
-            : `You're <strong>${fRev(t.revenueGap)}</strong>/mo short.`}
+          ${ahead
+            ? `Your current pace <strong>already clears</strong> what's needed — ${fRev(Math.abs(t.paceDelta))}/mo cushion.`
+            : `<strong>${fRev(t.totalGap)}</strong> still needed this year. That's <strong>${fRev(t.paceDelta)}/mo more</strong> than your current pace.`}
         </div>
       </div>
     </div>
   `;
 
-  if (aheadOfPace) {
+  if (ahead) {
     return `
       <div class="eq-wrap">
         ${currentRow}
         ${targetRow}
-        <div class="eq-hint">Your trailing-12-month pace already clears this goal. Consider raising the target.</div>
+        <div class="eq-hint">Your trailing-12-month pace is high enough to hit the ${t.goalYear} goal. Raise the target or hold the line.</div>
       </div>
     `;
   }
 
-  // Three paths
+  // Three paths — each holds two levers at current and solves for the third
   const clientDelta = t.clients - c.clients;
   const dealsDelta  = t.dealsPerClient - c.dealsPerClient;
   const priceDelta  = t.dealPrice - c.dealPrice;
@@ -3028,7 +3048,7 @@ function buildEquationHTML(eq) {
 
   const pathsHTML = `
     <div class="eq-paths">
-      <div class="eq-paths__title">Three paths to close the ${fRev(t.revenueGap)}/mo gap</div>
+      <div class="eq-paths__title">Three paths to hit ${fRev(t.revenue)}/mo over the next ${fMonths(t.monthsRemaining)}</div>
       <div class="eq-paths__subtitle">Each path holds two levers at today's pace and solves for the third.</div>
       <div class="path-grid">
         ${pathCard('Add realtors', 'More people sending you deals',

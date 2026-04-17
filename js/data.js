@@ -961,33 +961,48 @@ function computeTrackerMetrics(year, goal, today = new Date()) {
 /* -------------------------- Business Equation ---------------------------
    Identity: monthly_revenue = active_clients × deals_per_client × avg_deal_price
 
-   "Active clients" for a given month = distinct credited realtors (client field,
-   plus both sides when attribution = 'Both') who closed ≥1 deal that month.
+   "Active clients" for a given month = distinct credited realtors (client
+   field, plus both sides when attribution = 'Both') who closed ≥1 deal
+   that month.
 
-   Baseline is the trailing-12-month average so current pace is stable
-   regardless of which year the user has selected. When a goal exists,
-   decomposes the monthly revenue target into the three single-lever paths
-   that would each independently close the gap.
+   BASELINE: trailing 12 *complete* calendar months (current partial month
+   excluded). Averages divide by 12, not by "months with activity" — months
+   with zero deals count as zeros. This respects seasonality for an annual
+   goal without being biased by whichever slice of the year you view it in.
+
+   TARGET: what Ash needs to average per month from *now through year-end*
+   to still hit the goal — `(goal_revenue − YTD_revenue) / months_remaining`.
+   This gets more urgent as the year progresses, matching reality.
 --------------------------------------------------------------------------- */
-function computeBusinessEquation(goal, today = new Date()) {
-  // Trailing 12 months of real activity
-  const past12Start = new Date(today);
-  past12Start.setMonth(past12Start.getMonth() - 12);
+function computeBusinessEquation(goal, goalYear, today = new Date()) {
+  // Window: [start of month 12 ago, start of current month)
+  // Excludes today's partial month so the average isn't dragged down by an
+  // incomplete month in progress.
+  const windowEnd = new Date(today.getFullYear(), today.getMonth(), 1);
+  const windowStart = new Date(windowEnd);
+  windowStart.setMonth(windowStart.getMonth() - 12);
 
   const recentDeals = Store.getDeals().filter(d => {
     if (!d.disbursementDate) return false;
     const dt = new Date(d.disbursementDate);
-    return dt >= past12Start && dt <= today;
+    return dt >= windowStart && dt < windowEnd;
   });
 
-  // Bucket by year-month; within each month, collect distinct credited realtors
+  // Pre-create all 12 month buckets so months with zero activity still count.
   const monthBuckets = new Map();
+  for (let i = 0; i < 12; i++) {
+    const m = new Date(windowStart);
+    m.setMonth(m.getMonth() + i);
+    const ym = m.getFullYear() + '-' + String(m.getMonth() + 1).padStart(2, '0');
+    monthBuckets.set(ym, { clients: new Set(), dealCount: 0 });
+  }
+
   for (const d of recentDeals) {
     const dt = new Date(d.disbursementDate);
     const ym = dt.getFullYear() + '-' + String(dt.getMonth() + 1).padStart(2, '0');
-    if (!monthBuckets.has(ym)) monthBuckets.set(ym, { deals: [], clients: new Set() });
     const b = monthBuckets.get(ym);
-    b.deals.push(d);
+    if (!b) continue;
+    b.dealCount += 1;
     if (d.client && d.client.trim()) b.clients.add(d.client.trim().toLowerCase());
     if ((d.clientAttribution || '') === 'Both') {
       if (d.listingAgent) b.clients.add(d.listingAgent.trim().toLowerCase());
@@ -996,18 +1011,19 @@ function computeBusinessEquation(goal, today = new Date()) {
   }
 
   const months = Array.from(monthBuckets.values());
-  const activeMonths = months.length || 1;
   const totalRev = recentDeals.reduce((s, d) => s + Number(d.revenue || 0), 0);
   const totalDeals = recentDeals.length;
 
-  // Monthly averages — the levers
-  const avgRevenue = round2(totalRev / activeMonths);
-  const avgClients = months.length
-    ? round2(months.reduce((s, m) => s + m.clients.size, 0) / activeMonths)
-    : 0;
-  const avgDeals = round2(totalDeals / activeMonths);
+  // Divide by 12 (not by active months) — zero-activity months count as zeros.
+  const avgRevenue = round2(totalRev / 12);
+  const avgDeals = round2(totalDeals / 12);
+  const avgClients = round2(months.reduce((s, m) => s + m.clients.size, 0) / 12);
   const avgDealPrice = totalDeals > 0 ? round2(totalRev / totalDeals) : 0;
   const avgDealsPerClient = avgClients > 0 ? round2(avgDeals / avgClients) : 0;
+
+  const fmtYm = (d) => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+  const lastWindowMonth = new Date(windowEnd);
+  lastWindowMonth.setMonth(lastWindowMonth.getMonth() - 1);
 
   const current = {
     revenue: avgRevenue,
@@ -1015,19 +1031,42 @@ function computeBusinessEquation(goal, today = new Date()) {
     deals: avgDeals,
     dealPrice: avgDealPrice,
     dealsPerClient: avgDealsPerClient,
-    historyMonths: months.length
+    windowStart: fmtYm(windowStart),
+    windowEnd: fmtYm(lastWindowMonth),
+    activeMonths: months.filter(m => m.dealCount > 0).length
   };
 
-  // If no revenue goal, just surface current pace — no target, no paths
   if (!goal || !goal.revenue) {
-    return { current, target: null, paths: null };
+    return { current, target: null };
   }
 
-  const targetMonthlyRev = round2(goal.revenue / 12);
-  const revenueGap = round2(targetMonthlyRev - avgRevenue);
+  // Target: what's needed from now to year-end to still hit the goal.
+  // Matches the existing Goal Tracker's "needed pace" math.
+  const year = Number(goalYear) || today.getFullYear();
+  const yearStart = new Date(year, 0, 1);
+  const yearEnd = new Date(year, 11, 31, 23, 59, 59);
+  const nowClamped = today > yearEnd ? yearEnd : (today < yearStart ? yearStart : today);
 
-  // Three single-lever paths that each close the gap on their own.
-  // Hold the other two levers at their current values; solve for the one.
+  const ytdRevenue = round2(
+    Store.getDeals()
+      .filter(d => {
+        if (!d.disbursementDate) return false;
+        const dt = new Date(d.disbursementDate);
+        return dt >= yearStart && dt <= nowClamped;
+      })
+      .reduce((s, d) => s + Number(d.revenue || 0), 0)
+  );
+
+  const msPerMonth = 86400 * 1000 * 30.437;
+  const monthsRemaining = Math.max(0.5, (yearEnd - nowClamped) / msPerMonth);
+  const totalGap = Math.max(0, round2(goal.revenue - ytdRevenue));
+  const alreadyMet = totalGap === 0;
+
+  const targetMonthlyRev = alreadyMet ? 0 : round2(totalGap / monthsRemaining);
+  const paceDelta = round2(targetMonthlyRev - avgRevenue);
+
+  // Three single-lever paths that each would close the monthly gap on their
+  // own: hold two levers at their current value; solve for the third.
   const clientsNeeded = (avgDealPrice > 0 && avgDealsPerClient > 0)
     ? round2(targetMonthlyRev / (avgDealPrice * avgDealsPerClient))
     : null;
@@ -1038,20 +1077,22 @@ function computeBusinessEquation(goal, today = new Date()) {
     ? round2(targetMonthlyRev / (avgClients * avgDealsPerClient))
     : null;
 
-  const target = {
-    revenue: targetMonthlyRev,
-    revenueGap,
-    // Each "path" is the value that single lever must hit for the
-    // equation to balance at the target
-    clients: clientsNeeded,
-    dealsPerClient: dealsPerClientNeeded,
-    dealPrice: priceNeeded,
-    // Implied total deals/month for the clients-path
-    dealsImpliedByClients: (clientsNeeded !== null && avgDealsPerClient > 0)
-      ? round2(clientsNeeded * avgDealsPerClient) : null
+  return {
+    current,
+    target: {
+      goalYear: year,
+      goalRevenue: goal.revenue,
+      ytdRevenue,
+      totalGap,
+      monthsRemaining: round2(monthsRemaining),
+      revenue: targetMonthlyRev,
+      paceDelta,                 // needed monthly pace − current pace
+      alreadyMet,
+      clients: clientsNeeded,
+      dealsPerClient: dealsPerClientNeeded,
+      dealPrice: priceNeeded
+    }
   };
-
-  return { current, target };
 }
 
 /* -------------------------- Prediction math --------------------------- */
