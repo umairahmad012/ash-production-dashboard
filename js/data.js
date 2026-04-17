@@ -153,13 +153,19 @@ const Store = {
     // 3. Seed
     if (!hydrated) {
       this._seed();
-      // Push seed to cloud so other devices get consistent initial state
-      if (this._cloudReady) this._scheduleCloudSync();
     } else {
       try { localStorage.setItem(STORAGE_KEY, JSON.stringify(this.state)); } catch {}
     }
 
     this._suppressCloudSync = false;
+
+    // If the cloud is reachable, always sync after boot:
+    //   - Seed path → push the initial seed up
+    //   - localStorage path → push local copy up in case cloud was empty
+    //   - Cloud hydrate path → idempotent (state already matches cloud)
+    // This guarantees the cloud blob is never stale relative to what the user
+    // is actually seeing on this device.
+    if (this._cloudReady) this._scheduleCloudSync();
   },
 
   _seed() {
