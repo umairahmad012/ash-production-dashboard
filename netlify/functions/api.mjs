@@ -297,13 +297,13 @@ async function sendClerkInvitation(req, email, role) {
     const message = firstError?.long_message || firstError?.message || `Clerk ${resp.status}`;
 
     // Already-pending-invitation → look up the existing invite so we can
-    // offer a Resend. Clerk's exact error code varies by API version; we
-    // match on both code and message substring to be defensive.
-    if (
-      resp.status === 422 &&
-      (code === 'duplicate_record' ||
-       /invitation/i.test(message) && /already|exists|pending/i.test(message))
-    ) {
+    // offer a Resend. Clerk has returned this as both 400 and 422 across
+    // API versions and the error code varies too — so we match liberally
+    // on the human message instead of gating by status.
+    const looksLikeAlreadyPending =
+      code === 'duplicate_record' ||
+      (/invitation/i.test(message) && /already|exists|pending/i.test(message));
+    if (looksLikeAlreadyPending) {
       const existing = await findPendingInvitation(email);
       return {
         ok: true,
@@ -314,7 +314,11 @@ async function sendClerkInvitation(req, email, role) {
     }
 
     // The email already has a Clerk account → they can just sign in.
-    if (/already.*sign(ed)?\s*up|exists/i.test(message) && /user|account/i.test(message)) {
+    const looksLikeExistingAccount =
+      code === 'form_identifier_exists' ||
+      (/already.*sign(ed)?\s*up/i.test(message)) ||
+      (/user|account/i.test(message) && /already|exists/i.test(message));
+    if (looksLikeExistingAccount) {
       return {
         ok: true,
         status: 'already_signed_up',
