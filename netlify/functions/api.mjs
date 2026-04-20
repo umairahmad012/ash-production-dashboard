@@ -2,12 +2,13 @@
  * Netlify Function — API router for the Ash Production Dashboard.
  *
  * Routes (after the /api/ prefix):
- *   GET  /api/data          → main CRM state blob { deals, expenses, settings, goals }
- *   POST /api/data          → replace main CRM state blob
- *   GET  /api/users         → list authorized users (admin only)
- *   POST /api/users         → add/update a user by email (admin only)
- *   DELETE /api/users/:email → remove a user (admin only)
- *   GET  /api/me            → current user's session info + role
+ *   GET    /api/data                   → main CRM state blob { deals, expenses, settings, goals }
+ *   POST   /api/data                   → replace main CRM state blob
+ *   GET    /api/users                  → list authorized users (admin only)
+ *   POST   /api/users                  → add/update a user by email (admin only)
+ *   DELETE /api/users/:email           → remove a user (admin only)
+ *   POST   /api/users/:email/resend    → re-send Clerk invitation email (admin only)
+ *   GET    /api/me                     → current user's session info + role
  *
  * Auth: every request must carry a Clerk session JWT in the Authorization
  * header (Bearer xxx). The JWT is verified against Clerk's JWKS using the
@@ -18,6 +19,12 @@
  * read/write CRM data. This is a second layer on top of Clerk — even if
  * someone figures out the Clerk instance, they can't access data unless an
  * admin has added them.
+ *
+ * Concurrency note: the user directory is only written in the /me handler
+ * (for lastSeenAt / profile refresh) and in the explicit user-management
+ * handlers. The access-resolution step is read-only, so a long-running
+ * invitation (which calls out to Clerk) can't be clobbered by a concurrent
+ * /data request that used to read-modify-write the directory.
  */
 
 import { verifyToken } from '@clerk/backend';
@@ -93,8 +100,13 @@ function findUserInDirectory(directory, email) {
 
 // Bootstrap: if the directory is empty, the first authenticated user
 // becomes an admin. Otherwise, reject anyone not already in the directory.
+//
+// Read-only for established users: metadata refresh (lastSeenAt, name,
+// avatar) used to happen here on every request, which raced with
+// concurrent user-management writes. It now lives in handleMe only.
 async function resolveUserAccess(userId) {
-  const { email, firstName, lastName, imageUrl } = await fetchClerkUserEmail(userId);
+  const clerkInfo = await fetchClerkUserEmail(userId);
+  const { email } = clerkInfo;
   if (!email) return { ok: false, status: 403, reason: 'No email on your Clerk account' };
 
   const directory = await readUsersDirectory();
@@ -107,41 +119,59 @@ async function resolveUserAccess(userId) {
       role: 'admin',
       addedAt: new Date().toISOString(),
       addedBy: 'bootstrap',
-      firstName,
-      lastName,
-      imageUrl,
+      firstName: clerkInfo.firstName,
+      lastName: clerkInfo.lastName,
+      imageUrl: clerkInfo.imageUrl,
       lastSeenAt: new Date().toISOString()
     };
     directory.users.push(entry);
     await writeUsersDirectory(directory);
-    return { ok: true, user: entry, directory };
+    return { ok: true, user: entry, directory, clerkInfo, bootstrapped: true };
   }
 
   if (!entry) {
     return { ok: false, status: 403, reason: 'Your email is not authorized. Ask an admin to add you.', email };
   }
 
-  // Refresh metadata + lastSeenAt (so admins can see activity)
-  entry.firstName = firstName;
-  entry.lastName = lastName;
-  entry.imageUrl = imageUrl;
-  entry.lastSeenAt = new Date().toISOString();
-  await writeUsersDirectory(directory);
-
-  return { ok: true, user: entry, directory };
+  return { ok: true, user: entry, directory, clerkInfo };
 }
 
 // ────────────────────────────────────────────────────────────────────────────
 // Route handlers
 // ────────────────────────────────────────────────────────────────────────────
 
-async function handleMe(user) {
+// Refresh the entry's profile + lastSeenAt. Runs once per sign-in (Auth.init
+// hits /me). We re-read the directory right before writing to minimize the
+// window in which a concurrent user-management write could be clobbered.
+async function handleMe(access) {
+  const { user, clerkInfo } = access;
+  const nowIso = new Date().toISOString();
+
+  // The bootstrap path already wrote the entry inside resolveUserAccess —
+  // no need to re-read + re-write. Any other request re-reads fresh.
+  if (!access.bootstrapped) {
+    try {
+      const dir = await readUsersDirectory();
+      const entry = findUserInDirectory(dir, user.email);
+      if (entry) {
+        entry.firstName = clerkInfo.firstName;
+        entry.lastName = clerkInfo.lastName;
+        entry.imageUrl = clerkInfo.imageUrl;
+        entry.lastSeenAt = nowIso;
+        await writeUsersDirectory(dir);
+      }
+    } catch (e) {
+      // Non-fatal — profile metadata is a nice-to-have
+      console.warn('me metadata refresh failed:', e.message);
+    }
+  }
+
   return json({
     email: user.email,
     role: user.role,
-    firstName: user.firstName,
-    lastName: user.lastName,
-    imageUrl: user.imageUrl
+    firstName: clerkInfo.firstName || user.firstName || '',
+    lastName: clerkInfo.lastName || user.lastName || '',
+    imageUrl: clerkInfo.imageUrl || user.imageUrl || ''
   });
 }
 
@@ -199,7 +229,9 @@ async function handleAddOrUpdateUser(req, user) {
       imageUrl: '',
       lastSeenAt: null,
       invitationSent: false,
-      invitationId: null
+      invitationId: null,
+      invitationStatus: null,
+      invitationError: null
     };
     directory.users.push(entry);
   }
@@ -211,8 +243,10 @@ async function handleAddOrUpdateUser(req, user) {
   if (isNewUser) {
     inviteResult = await sendClerkInvitation(req, email, role);
     if (inviteResult.ok) {
-      entry.invitationSent = true;
-      entry.invitationId = inviteResult.invitationId;
+      entry.invitationSent = inviteResult.status === 'created';
+      entry.invitationId = inviteResult.invitationId || null;
+      entry.invitationStatus = inviteResult.status || 'created';
+      entry.invitationError = null;
     } else {
       entry.invitationError = inviteResult.reason;
     }
@@ -226,6 +260,12 @@ async function handleAddOrUpdateUser(req, user) {
 // Clerk sends the email itself (their SMTP). The link lands on Clerk's
 // Account Portal, where the user signs up; we don't need a custom
 // redirect URL.
+//
+// Return shape:
+//   { ok: true, status: 'created',          invitationId }
+//   { ok: true, status: 'already_pending',  invitationId, reason }
+//   { ok: true, status: 'already_signed_up',                  reason }
+//   { ok: false,                                              reason }
 async function sendClerkInvitation(req, email, role) {
   try {
     const origin = new URL(req.url).origin;
@@ -239,21 +279,120 @@ async function sendClerkInvitation(req, email, role) {
         email_address: email,
         redirect_url: origin,
         public_metadata: { role, source: 'ra-crm-admin' },
-        notify: true,
-        ignore_existing: true
+        notify: true
+        // NOTE: `ignore_existing` is intentionally omitted. When it's true
+        // and a pending invite already exists, Clerk silently succeeds
+        // without sending a new email — which looks to the admin like the
+        // invite worked but the user never receives a link. Without the
+        // flag, Clerk surfaces a 422 that we catch below and expose as
+        // `already_pending` so the admin can hit Resend.
       })
     });
     const data = await resp.json().catch(() => ({}));
-    if (!resp.ok) {
-      // Clerk returns structured errors; surface the first message cleanly
-      const firstError = data.errors?.[0];
-      const message = firstError?.long_message || firstError?.message || `Clerk ${resp.status}`;
-      return { ok: false, reason: message };
+    if (resp.ok) {
+      return { ok: true, status: 'created', invitationId: data.id };
     }
-    return { ok: true, invitationId: data.id, status: data.status };
+    const firstError = data.errors?.[0];
+    const code = (firstError?.code || '').toLowerCase();
+    const message = firstError?.long_message || firstError?.message || `Clerk ${resp.status}`;
+
+    // Already-pending-invitation → look up the existing invite so we can
+    // offer a Resend. Clerk's exact error code varies by API version; we
+    // match on both code and message substring to be defensive.
+    if (
+      resp.status === 422 &&
+      (code === 'duplicate_record' ||
+       /invitation/i.test(message) && /already|exists|pending/i.test(message))
+    ) {
+      const existing = await findPendingInvitation(email);
+      return {
+        ok: true,
+        status: 'already_pending',
+        invitationId: existing?.id || null,
+        reason: 'An invitation is still pending for this email. No new email was sent — click Resend to revoke the old invite and deliver a new link.'
+      };
+    }
+
+    // The email already has a Clerk account → they can just sign in.
+    if (/already.*sign(ed)?\s*up|exists/i.test(message) && /user|account/i.test(message)) {
+      return {
+        ok: true,
+        status: 'already_signed_up',
+        reason: 'This person already has a Clerk account — they can sign in with Google directly using this email.'
+      };
+    }
+
+    return { ok: false, reason: message };
   } catch (e) {
     return { ok: false, reason: 'Network error: ' + e.message };
   }
+}
+
+// Find a pending invitation for a given email, if any, so we can revoke it
+// before creating a new one.
+async function findPendingInvitation(email) {
+  try {
+    const url = new URL('https://api.clerk.com/v1/invitations');
+    url.searchParams.set('status', 'pending');
+    url.searchParams.set('query', email);
+    const resp = await fetch(url, {
+      headers: { Authorization: `Bearer ${process.env.CLERK_SECRET_KEY}` }
+    });
+    if (!resp.ok) return null;
+    const body = await resp.json().catch(() => null);
+    // Clerk returns either a bare array or an envelope { data: [...] }
+    const list = Array.isArray(body) ? body : (body?.data || []);
+    const low = email.toLowerCase();
+    return list.find(inv => (inv.email_address || '').toLowerCase() === low) || null;
+  } catch {
+    return null;
+  }
+}
+
+async function revokeClerkInvitation(invitationId) {
+  if (!invitationId) return false;
+  try {
+    const resp = await fetch(`https://api.clerk.com/v1/invitations/${invitationId}/revoke`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${process.env.CLERK_SECRET_KEY}` }
+    });
+    return resp.ok;
+  } catch {
+    return false;
+  }
+}
+
+async function handleResendInvite(email, user, req) {
+  if (user.role !== 'admin') return error('Admin only', 403);
+  const target = (email || '').trim().toLowerCase();
+  if (!target) return error('email required');
+
+  const directory = await readUsersDirectory();
+  const entry = findUserInDirectory(directory, target);
+  if (!entry) return error('User not found', 404);
+
+  // Revoke any existing pending invite so Clerk actually sends a new email
+  // (it won't re-notify if one is still outstanding for this address).
+  const knownId = entry.invitationId;
+  if (knownId) {
+    await revokeClerkInvitation(knownId);
+  } else {
+    const existing = await findPendingInvitation(target);
+    if (existing?.id) await revokeClerkInvitation(existing.id);
+  }
+
+  const result = await sendClerkInvitation(req, target, entry.role);
+  if (result.ok) {
+    entry.invitationSent = result.status === 'created';
+    entry.invitationId = result.invitationId || null;
+    entry.invitationStatus = result.status;
+    entry.invitationError = null;
+  } else {
+    entry.invitationError = result.reason;
+  }
+  await writeUsersDirectory(directory);
+
+  return json({ ok: result.ok, invite: result, user: entry });
 }
 
 async function handleDeleteUser(email, user) {
@@ -299,6 +438,10 @@ export default async (req, context) => {
   }
   if (!access.ok) return error(access.reason, access.status);
   const user = access.user;
+  // Pin the real email onto the user object so handlers that rely on it
+  // (e.g. `addedBy`) always have the up-to-date Clerk email even when the
+  // stored entry doesn't carry one yet.
+  user.email = user.email || access.clerkInfo?.email || '';
 
   const url = new URL(req.url);
   // The redirect in netlify.toml strips "/api/" but the function also
@@ -308,11 +451,15 @@ export default async (req, context) => {
   if (!path.startsWith('/')) path = '/' + path;
 
   try {
-    if (path === '/me' && req.method === 'GET') return handleMe(user);
+    if (path === '/me' && req.method === 'GET') return handleMe(access);
     if (path === '/data' && req.method === 'GET') return handleGetData();
     if (path === '/data' && req.method === 'POST') return handleSaveData(req, user);
     if (path === '/users' && req.method === 'GET') return handleListUsers(user);
     if (path === '/users' && req.method === 'POST') return handleAddOrUpdateUser(req, user);
+    if (req.method === 'POST' && path.startsWith('/users/') && path.endsWith('/resend')) {
+      const email = decodeURIComponent(path.slice('/users/'.length, -'/resend'.length));
+      return handleResendInvite(email, user, req);
+    }
     if (path.startsWith('/users/') && req.method === 'DELETE') {
       const email = decodeURIComponent(path.slice('/users/'.length));
       return handleDeleteUser(email, user);

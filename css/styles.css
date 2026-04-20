@@ -3643,7 +3643,29 @@ body.is-signed-in .auth-gate { display: none; }
   border: 1px solid rgba(201, 168, 76, 0.3);
   border-radius: 2px;
 }
+.admin-badge--active {
+  color: var(--forest-green, #1f4b3a);
+  background: rgba(31, 75, 58, 0.1);
+  border-color: rgba(31, 75, 58, 0.28);
+}
+.admin-badge--warn {
+  color: #8a4a00;
+  background: rgba(207, 129, 22, 0.12);
+  border-color: rgba(207, 129, 22, 0.32);
+}
 .admin-dim { color: var(--mid-grey); }
+.admin-sep {
+  color: var(--line);
+  margin: 0 4px;
+}
+.admin-user__invite-detail {
+  font-family: var(--sans);
+  font-size: 11px;
+  color: var(--mid-grey);
+  margin-top: 4px;
+  max-width: 38ch;
+  line-height: 1.4;
+}
 
 /* ==========================================================================
    Goal tracker — unified layout (projection row, YTD grid, equation, paths)

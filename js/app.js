@@ -915,13 +915,7 @@ App._wireAdminModal = function() {
       }
       const body = await resp.json().catch(() => ({}));
       const invite = body.invite;
-      if (invite && invite.ok) {
-        App.toast(`Invitation emailed to ${email}`);
-      } else if (invite && !invite.ok) {
-        App.toast(`Added ${email} (email not sent: ${invite.reason})`);
-      } else {
-        App.toast(`Updated ${email}`);
-      }
+      App.toast(inviteToast(email, invite, 'added'));
       App.openAdminModal();
     });
   }
@@ -933,6 +927,27 @@ App._wireAdminModal = function() {
       const resp = await Auth.apiFetch('/api/users/' + encodeURIComponent(email), { method: 'DELETE' });
       if (resp.ok) { App.toast('User removed'); App.openAdminModal(); }
       else App.toast('Remove failed: ' + resp.status);
+    });
+  });
+
+  document.querySelectorAll('[data-admin-resend]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const email = btn.getAttribute('data-admin-resend');
+      btn.disabled = true;
+      const orig = btn.textContent;
+      btn.textContent = 'Sending…';
+      try {
+        const resp = await Auth.apiFetch('/api/users/' + encodeURIComponent(email) + '/resend', {
+          method: 'POST'
+        });
+        const body = await resp.json().catch(() => ({}));
+        App.toast(inviteToast(email, body.invite, 'resent'));
+        App.openAdminModal();
+      } catch (e) {
+        App.toast('Resend failed: ' + e.message);
+        btn.disabled = false;
+        btn.textContent = orig;
+      }
     });
   });
 
@@ -960,6 +975,47 @@ function adminModalLoadingHTML() {
   return `<div class="admin-loading"><div class="auth-spinner"></div><div>Loading admin center…</div></div>`;
 }
 
+// Turn an invite result into a human-readable toast. `action` is the verb
+// ('added' or 'resent') shown when the email is successfully delivered.
+function inviteToast(email, invite, action) {
+  if (!invite) return `${action === 'resent' ? 'Resent' : 'Updated'} ${email}`;
+  if (invite.ok && invite.status === 'created')         return `Invitation emailed to ${email}`;
+  if (invite.ok && invite.status === 'already_pending') return `${email}: invite was still pending — click Resend to deliver a fresh link`;
+  if (invite.ok && invite.status === 'already_signed_up') return `${email} already has an account — they can sign in with Google`;
+  if (!invite.ok) return `${email} saved, but email not sent: ${invite.reason}`;
+  return `${action === 'resent' ? 'Resent' : 'Added'} ${email}`;
+}
+
+// Returns the inline status line + per-row actions for the invite column.
+// `u` is a directory entry as returned by /api/users.
+function adminInviteCell(u) {
+  if (u.lastSeenAt) return { label: '<span class="admin-badge admin-badge--active">Active</span>', actions: '' };
+  const resendBtn = `<button type="button" class="btn-link" data-admin-resend="${escapeHtml(u.email)}">Resend invite</button>`;
+  if (u.invitationError) {
+    return {
+      label: `<span class="admin-badge admin-badge--warn">Email failed</span>`,
+      actions: resendBtn,
+      detail: u.invitationError
+    };
+  }
+  if (u.invitationStatus === 'already_signed_up') {
+    return { label: '<span class="admin-badge">Existing account</span>', actions: '' };
+  }
+  if (u.invitationStatus === 'already_pending') {
+    return {
+      label: '<span class="admin-badge admin-badge--warn">Pending (stale)</span>',
+      actions: resendBtn,
+      detail: 'Clerk still had an old invite on file — resend to deliver a new link.'
+    };
+  }
+  if (u.invitationSent || u.invitationStatus === 'created') {
+    return { label: '<span class="admin-badge">Invited</span>', actions: resendBtn };
+  }
+  // Added manually (no invite attempt recorded). Still offer Resend so the
+  // admin can kick off the email without re-entering the email address.
+  return { label: '<span class="admin-dim">—</span>', actions: resendBtn };
+}
+
 function adminModalHTML(dir, me) {
   const users = (dir.users || []).slice().sort((a, b) => a.email.localeCompare(b.email));
   const fmtDate = (iso) => {
@@ -971,11 +1027,14 @@ function adminModalHTML(dir, me) {
   const rows = users.map(u => {
     const isMe = u.email.toLowerCase() === me.email.toLowerCase();
     const displayName = ((u.firstName || '') + ' ' + (u.lastName || '')).trim() || '—';
+    const invite = adminInviteCell(u);
     const lastSeenCell = u.lastSeenAt
       ? fmtDate(u.lastSeenAt)
-      : (u.invitationSent
-          ? '<span class="admin-badge">Invited</span>'
-          : '<span class="admin-dim">—</span>');
+      : invite.label;
+    const rowActions = [
+      !isMe && invite.actions ? invite.actions : '',
+      !isMe ? `<button type="button" class="btn-link btn-link--danger" data-admin-remove="${escapeHtml(u.email)}">Remove</button>` : ''
+    ].filter(Boolean).join(' <span class="admin-sep">·</span> ');
     return `
       <tr>
         <td>
@@ -984,6 +1043,7 @@ function adminModalHTML(dir, me) {
             <div>
               <div class="admin-user__email">${escapeHtml(u.email)}${isMe ? ' <span class="admin-user__you">(you)</span>' : ''}</div>
               <div class="admin-user__name">${escapeHtml(displayName)}</div>
+              ${invite.detail ? `<div class="admin-user__invite-detail">${escapeHtml(invite.detail)}</div>` : ''}
             </div>
           </div>
         </td>
@@ -996,9 +1056,7 @@ function adminModalHTML(dir, me) {
         </td>
         <td class="num">${lastSeenCell}</td>
         <td class="num">${fmtDate(u.addedAt)}</td>
-        <td>
-          ${isMe ? '' : `<button type="button" class="btn-link btn-link--danger" data-admin-remove="${escapeHtml(u.email)}">Remove</button>`}
-        </td>
+        <td>${rowActions}</td>
       </tr>
     `;
   }).join('');
