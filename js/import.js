@@ -28,6 +28,7 @@ const Import = {
     { key: 'ownersPolicy',        label: "Owner's Policy",        hint: 'Dollars' },
     { key: 'lenderName',          label: 'Lender Name',           hint: 'Funding institution (e.g. Wells Fargo)' },
     { key: 'loanAmount',          label: 'Loan Amount',           hint: 'Dollars' },
+    { key: 'purchasePrice',       label: 'Purchase Price',        hint: 'Property sale price (dollars)' },
   ],
 
   /* Common header patterns → canonical field. Lowercased, punctuation removed. */
@@ -50,7 +51,8 @@ const Import = {
     lendersPolicy: [/lender'?s?\s*policy/, /lender.*premium/],
     ownersPolicy: [/owner'?s?\s*policy/, /owner.*premium/],
     lenderName: [/^lender(\s*name)?$/, /^bank$/, /loan\s*officer/, /lender\s*(institution|company)/],
-    loanAmount: [/^loan\s*(amount|amt)$/, /^loan$/, /mortgage\s*amount/, /financing\s*amount/]
+    loanAmount: [/^loan\s*(amount|amt)$/, /^loan$/, /mortgage\s*amount/, /financing\s*amount/],
+    purchasePrice: [/^purchase\s*(price|amount|amt)$/, /^sales?\s*price$/, /^property\s*price$/, /^sale\s*price$/, /^contract\s*price$/]
   },
 
   /* Runtime state (carried across wizard steps). */
@@ -148,7 +150,7 @@ const Import = {
       if (!field) return;
       const raw = row[i];
       if (raw === undefined || raw === null || String(raw).trim() === '') return;
-      if (field === 'settlementFee' || field === 'lendersPolicy' || field === 'ownersPolicy' || field === 'loanAmount') {
+      if (field === 'settlementFee' || field === 'lendersPolicy' || field === 'ownersPolicy' || field === 'loanAmount' || field === 'purchasePrice') {
         obj[field] = this.parseMoney(raw);
       } else if (field === 'disbursementDate' || field === 'closingDate') {
         obj[field] = this.parseDate(raw);

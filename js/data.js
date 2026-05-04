@@ -263,6 +263,7 @@ const Store = {
     // New fields — normalize so the rest of the app can rely on shape.
     deal.lenderName = (deal.lenderName || '').trim();
     deal.loanAmount = Number(deal.loanAmount || 0);
+    deal.purchasePrice = Number(deal.purchasePrice || 0);
     // Title company is a strict enum. Anything else (or blank) → unassigned.
     if (!TITLE_COMPANIES.includes(deal.titleCompany)) {
       deal.titleCompany = TITLE_COMPANY_UNASSIGNED;
@@ -614,8 +615,9 @@ const Store = {
           ownersPolicy: 0,
           lendersPolicy: 0,
           settlementFee: 0,
-          totalPremium: 0,   // owner + lender
+          totalPremium: 0,    // owner + lender
           revenue: 0,         // full deal revenue (fees included)
+          purchaseVolume: 0,  // sum of property purchase prices
           purchase: 0,
           refinance: 0,
           subordinate: 0,
@@ -635,6 +637,7 @@ const Store = {
       uw.settlementFee += Number(d.settlementFee || 0);
       uw.revenue       += Number(d.revenue || 0);
       uw.totalPremium  += Number(d.ownersPolicy || 0) + Number(d.lendersPolicy || 0);
+      uw.purchaseVolume += Number(d.purchasePrice || 0);
 
       if (d.transactionType === 'Purchase') uw.purchase += 1;
       else if (d.transactionType === 'Refinance') uw.refinance += 1;
@@ -660,7 +663,9 @@ const Store = {
       uw.settlementFee = round2(uw.settlementFee);
       uw.totalPremium  = round2(uw.totalPremium);
       uw.revenue       = round2(uw.revenue);
+      uw.purchaseVolume = round2(uw.purchaseVolume);
       uw.avgPremium    = uw.dealCount > 0 ? round2(uw.totalPremium / uw.dealCount) : 0;
+      uw.avgPurchase   = uw.dealCount > 0 ? round2(uw.purchaseVolume / uw.dealCount) : 0;
       const meta = (this.state.underwriterMeta || {})[uw.name] || {};
       uw.notes = meta.notes || '';
       out.push(uw);
@@ -719,6 +724,7 @@ const Store = {
           name: key,
           dealCount: 0,
           loanAmount: 0,     // ← headline metric per Q9
+          purchaseVolume: 0, // total property value funded through this lender
           revenue: 0,        // full deal revenue contributed by this lender
           expenses: 0,       // expenses tagged with lenderName === this.name
           purchase: 0,
@@ -736,6 +742,7 @@ const Store = {
       if (!ld) continue;
       ld.dealCount += 1;
       ld.loanAmount += Number(d.loanAmount || 0);
+      ld.purchaseVolume += Number(d.purchasePrice || 0);
       ld.revenue   += Number(d.revenue || 0);
       if (d.transactionType === 'Purchase') ld.purchase += 1;
       else if (d.transactionType === 'Refinance') ld.refinance += 1;
@@ -762,9 +769,11 @@ const Store = {
     const out = [];
     for (const ld of byName.values()) {
       ld.loanAmount = round2(ld.loanAmount);
+      ld.purchaseVolume = round2(ld.purchaseVolume);
       ld.revenue    = round2(ld.revenue);
       ld.expenses   = round2(ld.expenses);
       ld.avgLoan    = ld.dealCount > 0 ? round2(ld.loanAmount / ld.dealCount) : 0;
+      ld.avgPurchase = ld.dealCount > 0 ? round2(ld.purchaseVolume / ld.dealCount) : 0;
       ld.avgRevenue = ld.dealCount > 0 ? round2(ld.revenue / ld.dealCount) : 0;
       ld.costPerDeal = ld.dealCount > 0 ? round2(ld.expenses / ld.dealCount) : 0;
       ld.roi = ld.expenses > 0 ? round2(ld.revenue / ld.expenses) : (ld.revenue > 0 ? 999 : 0);
@@ -1003,7 +1012,8 @@ const Store = {
       'listingAgent', 'listingBroker', 'sellingAgent', 'sellingBroker',
       'client', 'clientAttribution',
       'settlementFee', 'lendersPolicy', 'ownersPolicy',
-      'lenderName', 'loanAmount', 'titleCompany'
+      'lenderName', 'loanAmount', 'titleCompany',
+      'purchasePrice'
     ];
     for (const f of mergeableFields) {
       const k = keep[f];

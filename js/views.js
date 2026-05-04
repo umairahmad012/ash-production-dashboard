@@ -639,6 +639,7 @@ Views.deals = function(query = {}) {
     underwriter:       d => d.underwriter || '',
     lenderName:        d => d.lenderName || '',
     loanAmount:        d => Number(d.loanAmount || 0),
+    purchasePrice:     d => Number(d.purchasePrice || 0),
     titleCompany:      d => d.titleCompany || ''
   };
   const getter = DEAL_SORT_GETTERS[sortField] || DEAL_SORT_GETTERS.disbursementDate;
@@ -722,11 +723,12 @@ Views.deals = function(query = {}) {
               ${sortableTH('year',              'Year',              query)}
               ${sortableTH('underwriter',       'Underwriter',       query)}
               ${sortableTH('lenderName',        'Lender',            query)}
+              ${sortableTH('purchasePrice',     'Purchase Price',    query, 'num')}
               ${sortableTH('loanAmount',        'Loan Amt',          query, 'num')}
               <th></th>
             </tr></thead>
             <tbody>
-              ${filtered.length === 0 ? `<tr><td colspan="21" class="center muted" style="padding: 64px 20px;">No deals match your filters.</td></tr>` : filtered.map(d => {
+              ${filtered.length === 0 ? `<tr><td colspan="22" class="center muted" style="padding: 64px 20px;">No deals match your filters.</td></tr>` : filtered.map(d => {
                 const attr = d.clientAttribution || computeClientSource(d);
                 const attrClass = attr === 'Direct' ? 'forest' : 'gold';
                 const listing = (d.listingAgent || '').trim();
@@ -759,6 +761,7 @@ Views.deals = function(query = {}) {
                   <td class="muted">${year}</td>
                   <td class="muted">${escapeHtml(d.underwriter || '—')}</td>
                   <td>${lender ? `<a href="#/lender/${encodeURIComponent(lender)}" class="cell-client-link">${escapeHtml(lender)}</a>` : '<span class="muted">—</span>'}</td>
+                  <td class="num">${d.purchasePrice ? fmtMoney(d.purchasePrice, { decimals: 0 }) : '—'}</td>
                   <td class="num">${d.loanAmount ? fmtMoney(d.loanAmount, { decimals: 0 }) : '—'}</td>
                   <td>
                     <div class="inline-actions">
@@ -807,7 +810,7 @@ Views.dealsPost = function() {
        'Property Address', 'Disbursement Date', 'Transaction Type',
        'Settlement Fee', "Lender's Policy", "Owner's Policy", 'File Fee', 'Revenue',
        'Month', 'Year', 'Underwriter',
-       'Lender Name', 'Loan Amount'],
+       'Lender Name', 'Purchase Price', 'Loan Amount'],
       ...deals.map(d => {
         const dt = d.disbursementDate ? new Date(d.disbursementDate) : null;
         const month = dt && !isNaN(dt) ? dt.toLocaleString('en-US', { month: 'short' }) : '';
@@ -820,7 +823,7 @@ Views.dealsPost = function() {
           d.settlementFee || 0, d.lendersPolicy || 0, d.ownersPolicy || 0,
           d.fileFee || 0, d.revenue || 0,
           month, year, d.underwriter || '',
-          d.lenderName || '', d.loanAmount || 0
+          d.lenderName || '', d.purchasePrice || 0, d.loanAmount || 0
         ];
       })
     ];
@@ -903,7 +906,7 @@ Views.dealsPost = function() {
         onClick: (ids) => {
           const deals = ids.map(id => Store.getDeal(id)).filter(Boolean);
           const rows = [
-            ['Order #', 'Title Company', 'Disbursement', 'Property Address', 'Client', 'Listing Agent', 'Selling Agent', 'Source', 'Type', 'Settlement Fee', 'Lender Policy', 'Owner Policy', 'File Fee', 'Revenue', 'Lender Name', 'Loan Amount'],
+            ['Order #', 'Title Company', 'Disbursement', 'Property Address', 'Client', 'Listing Agent', 'Selling Agent', 'Source', 'Type', 'Settlement Fee', 'Lender Policy', 'Owner Policy', 'File Fee', 'Revenue', 'Lender Name', 'Purchase Price', 'Loan Amount'],
             ...deals.map(d => [
               d.orderNumber || '', d.titleCompany || '',
               d.disbursementDate || '', d.propertyAddress || '',
@@ -912,7 +915,7 @@ Views.dealsPost = function() {
               d.transactionType || '',
               d.settlementFee || 0, d.lendersPolicy || 0, d.ownersPolicy || 0,
               d.fileFee || 0, d.revenue || 0,
-              d.lenderName || '', d.loanAmount || 0
+              d.lenderName || '', d.purchasePrice || 0, d.loanAmount || 0
             ])
           ];
           downloadCSV(`deals-export-${new Date().toISOString().slice(0,10)}.csv`, rows);
@@ -1269,10 +1272,12 @@ Views.underwritersPost = function() {
 
   document.querySelector('[data-action="export-all-underwriters"]')?.addEventListener('click', () => {
     const rows = [
-      ['Underwriter', 'Deals', "Owner's Policy", "Lender's Policy", 'Total Premium', 'Avg Premium / Deal', 'Revenue', 'Purchase', 'Refinance', 'Subordinate', 'First Deal', 'Last Deal'],
+      ['Underwriter', 'Deals', "Owner's Policy", "Lender's Policy", 'Total Premium', 'Avg Premium / Deal', 'Purchase Volume', 'Avg Purchase / Deal', 'Revenue', 'Purchase', 'Refinance', 'Subordinate', 'First Deal', 'Last Deal'],
       ...Store.getUnderwriters().map(u => [
         u.name, u.dealCount, u.ownersPolicy, u.lendersPolicy, u.totalPremium,
-        u.avgPremium, u.revenue,
+        u.avgPremium,
+        u.purchaseVolume || 0, u.avgPurchase || 0,
+        u.revenue,
         u.purchase, u.refinance, u.subordinate,
         u.firstDeal || '', u.lastDeal || ''
       ])
@@ -1336,6 +1341,11 @@ Views.underwriterDetail = function(name) {
           <div class="stat-card__label">Total Deals</div>
           <div class="stat-card__value" data-countup="${uw.dealCount}">${fmtNumber(uw.dealCount)}</div>
           <div class="stat-card__meta">${uw.purchase} Purchase · ${uw.refinance} Refi · ${uw.subordinate} Sub</div>
+        </div>
+        <div class="stat-card" data-animate="card">
+          <div class="stat-card__label">Total Purchase Volume</div>
+          <div class="stat-card__value" data-countup="${(uw.purchaseVolume || 0).toFixed(0)}">${fmtMoney(uw.purchaseVolume || 0, { decimals: 0 })}</div>
+          <div class="stat-card__meta">Avg ${fmtMoney(uw.avgPurchase || 0, { decimals: 0 })} / deal</div>
         </div>
         <div class="stat-card" data-animate="card">
           <div class="stat-card__label">Owner's Policy Volume</div>
@@ -1446,16 +1456,17 @@ Views.lenders = function(query = {}) {
   const sortField = query.sort || 'loanAmount';
   const sortDir   = query.dir  || (query.sort ? 'asc' : 'desc');
   const LENDER_SORT_GETTERS = {
-    name:        l => l.name || '',
-    dealCount:   l => Number(l.dealCount || 0),
-    loanAmount:  l => Number(l.loanAmount || 0),
-    avgLoan:     l => Number(l.avgLoan || 0),
-    revenue:     l => Number(l.revenue || 0),
-    expenses:    l => Number(l.expenses || 0),
-    roi:         l => Number(l.roi || 0),
-    costPerDeal: l => Number(l.costPerDeal || 0),
-    firstDeal:   l => l.firstDeal || '',
-    lastDeal:    l => l.lastDeal || ''
+    name:           l => l.name || '',
+    dealCount:      l => Number(l.dealCount || 0),
+    loanAmount:     l => Number(l.loanAmount || 0),
+    purchaseVolume: l => Number(l.purchaseVolume || 0),
+    avgLoan:        l => Number(l.avgLoan || 0),
+    revenue:        l => Number(l.revenue || 0),
+    expenses:       l => Number(l.expenses || 0),
+    roi:            l => Number(l.roi || 0),
+    costPerDeal:    l => Number(l.costPerDeal || 0),
+    firstDeal:      l => l.firstDeal || '',
+    lastDeal:       l => l.lastDeal || ''
   };
   const getter = LENDER_SORT_GETTERS[sortField] || LENDER_SORT_GETTERS.loanAmount;
   filtered = sortItems(filtered, getter, sortDir);
@@ -1502,24 +1513,26 @@ Views.lenders = function(query = {}) {
         <div class="table-wrap">
           <table class="data">
             <thead><tr>
-              ${sortableTH('name',        'Lender',          query)}
-              ${sortableTH('dealCount',   'Deals',           query, 'num')}
-              ${sortableTH('loanAmount',  'Loan Volume',     query, 'num')}
-              ${sortableTH('avgLoan',     'Avg Loan',        query, 'num')}
-              ${sortableTH('revenue',     'Revenue',         query, 'num')}
-              ${sortableTH('expenses',    'Spent',           query, 'num')}
-              ${sortableTH('roi',         'ROI',             query, 'num')}
-              ${sortableTH('costPerDeal', 'Cost / Deal',     query, 'num')}
-              ${sortableTH('firstDeal',   'First Deal',      query)}
-              ${sortableTH('lastDeal',    'Last Deal',       query)}
+              ${sortableTH('name',           'Lender',          query)}
+              ${sortableTH('dealCount',      'Deals',           query, 'num')}
+              ${sortableTH('loanAmount',     'Loan Volume',     query, 'num')}
+              ${sortableTH('purchaseVolume', 'Purchase Volume', query, 'num')}
+              ${sortableTH('avgLoan',        'Avg Loan',        query, 'num')}
+              ${sortableTH('revenue',        'Revenue',         query, 'num')}
+              ${sortableTH('expenses',       'Spent',           query, 'num')}
+              ${sortableTH('roi',            'ROI',             query, 'num')}
+              ${sortableTH('costPerDeal',    'Cost / Deal',     query, 'num')}
+              ${sortableTH('firstDeal',      'First Deal',      query)}
+              ${sortableTH('lastDeal',       'Last Deal',       query)}
               <th></th>
             </tr></thead>
             <tbody>
-              ${filtered.length === 0 ? `<tr><td colspan="11" class="center muted" style="padding: 64px 20px;">No lenders yet. Add a lender name to any deal to start tracking.</td></tr>` : filtered.map(l => `
+              ${filtered.length === 0 ? `<tr><td colspan="12" class="center muted" style="padding: 64px 20px;">No lenders yet. Add a lender name to any deal to start tracking.</td></tr>` : filtered.map(l => `
                 <tr class="is-clickable" data-lender="${escapeHtml(l.name)}">
                   <td class="cell-strong">${escapeHtml(l.name)}</td>
                   <td class="num cell-strong">${fmtNumber(l.dealCount)}</td>
                   <td class="num cell-strong">${l.loanAmount ? fmtMoney(l.loanAmount, { decimals: 0 }) : '—'}</td>
+                  <td class="num">${l.purchaseVolume ? fmtMoney(l.purchaseVolume, { decimals: 0 }) : '—'}</td>
                   <td class="num muted">${l.avgLoan ? fmtMoney(l.avgLoan, { decimals: 0 }) : '—'}</td>
                   <td class="num">${fmtMoney(l.revenue, { decimals: 0 })}</td>
                   <td class="num">${l.expenses ? fmtMoney(l.expenses, { decimals: 0 }) : '—'}</td>
@@ -1559,9 +1572,11 @@ Views.lendersPost = function() {
     const lenders = Store.getLenders();
     if (!lenders.length) return App.toast('No lenders to export');
     const rows = [
-      ['Lender', 'Deals', 'Loan Volume', 'Avg Loan', 'Revenue', 'Spent', 'ROI', 'Cost / Deal', 'Budget Target', 'Purchase', 'Refinance', 'Subordinate', 'First Deal', 'Last Deal', 'Notes'],
+      ['Lender', 'Deals', 'Loan Volume', 'Purchase Volume', 'Avg Loan', 'Avg Purchase', 'Revenue', 'Spent', 'ROI', 'Cost / Deal', 'Budget Target', 'Purchase', 'Refinance', 'Subordinate', 'First Deal', 'Last Deal', 'Notes'],
       ...lenders.map(l => [
-        l.name, l.dealCount, l.loanAmount, l.avgLoan, l.revenue, l.expenses, l.roi,
+        l.name, l.dealCount, l.loanAmount, l.purchaseVolume,
+        l.avgLoan, l.avgPurchase,
+        l.revenue, l.expenses, l.roi,
         l.costPerDeal, l.budgetTarget != null ? l.budgetTarget : '',
         l.purchase, l.refinance, l.subordinate,
         l.firstDeal || '', l.lastDeal || '', l.notes || ''
@@ -1652,6 +1667,11 @@ Views.lenderDetail = function(name) {
           <div class="stat-card__meta">Avg ${fmtMoney(l.avgLoan, { decimals: 0 })} / deal</div>
         </div>
         <div class="stat-card" data-animate="card">
+          <div class="stat-card__label">Total Purchase Volume</div>
+          <div class="stat-card__value" data-countup="${l.purchaseVolume.toFixed(0)}">${fmtMoney(l.purchaseVolume, { decimals: 0 })}</div>
+          <div class="stat-card__meta">Avg ${fmtMoney(l.avgPurchase, { decimals: 0 })} / deal</div>
+        </div>
+        <div class="stat-card" data-animate="card">
           <div class="stat-card__label">Total Deals</div>
           <div class="stat-card__value" data-countup="${l.dealCount}">${fmtNumber(l.dealCount)}</div>
           <div class="stat-card__meta">${l.purchase} Purchase · ${l.refinance} Refi · ${l.subordinate} Sub</div>
@@ -1685,17 +1705,19 @@ Views.lenderDetail = function(name) {
               <th>Disbursement</th>
               <th>Type</th>
               <th>Property</th>
+              <th class="num">Purchase Price</th>
               <th class="num">Loan Amt</th>
               <th class="num">Revenue</th>
             </tr></thead>
             <tbody>
-              ${deals.length === 0 ? '<tr><td colspan="7" class="center muted" style="padding: 48px 20px;">No deals on file for this lender.</td></tr>' : deals.map(d => `
+              ${deals.length === 0 ? '<tr><td colspan="8" class="center muted" style="padding: 48px 20px;">No deals on file for this lender.</td></tr>' : deals.map(d => `
                 <tr>
                   <td class="cell-strong">${escapeHtml(d.orderNumber || '—')}</td>
                   <td>${titleCompanyTag(d.titleCompany)}</td>
                   <td class="muted">${fmtDate(d.disbursementDate)}</td>
                   <td>${dealTypeTag(d.transactionType)}</td>
                   <td class="muted">${escapeHtml(d.propertyAddress || '—')}</td>
+                  <td class="num">${d.purchasePrice ? fmtMoney(d.purchasePrice, { decimals: 0 }) : '—'}</td>
                   <td class="num">${d.loanAmount ? fmtMoney(d.loanAmount, { decimals: 0 }) : '—'}</td>
                   <td class="num cell-strong">${fmtMoney(d.revenue, { decimals: 0 })}</td>
                 </tr>
@@ -1703,6 +1725,7 @@ Views.lenderDetail = function(name) {
               ${deals.length > 0 ? `
                 <tr class="totals-row">
                   <td colspan="5" class="num"><strong>Totals</strong></td>
+                  <td class="num cell-strong">${fmtMoney(l.purchaseVolume, { decimals: 0 })}</td>
                   <td class="num cell-strong">${fmtMoney(l.loanAmount, { decimals: 0 })}</td>
                   <td class="num cell-strong">${fmtMoney(l.revenue, { decimals: 0 })}</td>
                 </tr>
@@ -1766,11 +1789,12 @@ Views.lenderDetailPost = function(name) {
     const deals = Store.getDealsForLender(name);
     if (!deals.length) return App.toast('No deals to export');
     const rows = [
-      ['Lender', 'Order #', 'Title Company', 'Disbursement', 'Type', 'Property', 'Loan Amount', 'Revenue'],
+      ['Lender', 'Order #', 'Title Company', 'Disbursement', 'Type', 'Property', 'Purchase Price', 'Loan Amount', 'Revenue'],
       ...deals.map(d => [
         l.name, d.orderNumber || '', d.titleCompany || '',
         d.disbursementDate || '', d.transactionType || '',
-        d.propertyAddress || '', Number(d.loanAmount || 0), Number(d.revenue || 0)
+        d.propertyAddress || '',
+        Number(d.purchasePrice || 0), Number(d.loanAmount || 0), Number(d.revenue || 0)
       ])
     ];
     const filename = `lender-${name.replace(/\s+/g, '-').toLowerCase()}-${new Date().toISOString().slice(0,10)}.csv`;
@@ -3079,16 +3103,20 @@ function dealModalHTML(deal, prefill = {}) {
       </div>
 
       <!-- Section: Lender (institution that funded the loan) -->
-      <div class="form-section-title">${icon('underwriters', 14)} Lender &amp; Loan</div>
+      <div class="form-section-title">${icon('underwriters', 14)} Lender, Loan &amp; Property Value</div>
       <div class="form-grid">
         <div class="field field--full">
           <label class="field__label">Lender Name</label>
           <input class="field__input" name="lenderName" value="${escapeHtml(d.lenderName || '')}" list="lenderList" placeholder="e.g. Wells Fargo, Rocket Mortgage" />
           <span class="field__hint">The institution that funded the loan. Type to add a new lender.</span>
         </div>
-        <div class="field field--full">
+        <div class="field">
+          <label class="field__label">Purchase Price</label>
+          <input class="field__input" type="number" step="0.01" name="purchasePrice" value="${d.purchasePrice || ''}" placeholder="Property sale price" />
+        </div>
+        <div class="field">
           <label class="field__label">Loan Amount</label>
-          <input class="field__input" type="number" step="0.01" name="loanAmount" value="${d.loanAmount || ''}" placeholder="Optional — used in Lender database rollups" />
+          <input class="field__input" type="number" step="0.01" name="loanAmount" value="${d.loanAmount || ''}" placeholder="Optional" />
         </div>
       </div>
 
