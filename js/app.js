@@ -239,6 +239,10 @@ const App = {
       this._render('underwriter', { name: decodeURIComponent(parts[1]) });
       return;
     }
+    if (route === 'lender' && parts[1]) {
+      this._render('lender', { name: decodeURIComponent(parts[1]) });
+      return;
+    }
 
     this._render(route, query);
   },
@@ -278,9 +282,15 @@ const App = {
 
     const main = document.getElementById('main');
 
-    // Highlight nav
+    // Highlight nav — keep parent list highlighted when on a detail page
     document.querySelectorAll('.nav__item').forEach(a => {
-      a.classList.toggle('is-active', a.dataset.route === route || (route === 'agent' && a.dataset.route === 'agents'));
+      const r = a.dataset.route;
+      a.classList.toggle('is-active',
+        r === route ||
+        (route === 'agent'       && r === 'agents') ||
+        (route === 'underwriter' && r === 'underwriters') ||
+        (route === 'lender'      && r === 'lenders')
+      );
     });
 
     let html = '';
@@ -313,6 +323,15 @@ const App = {
       case 'underwriter':
         html = Views.underwriterDetail(params.name);
         postFn = Views.underwriterDetailPost;
+        postArg = params.name;
+        break;
+      case 'lenders':
+        html = Views.lenders(params);
+        postFn = Views.lendersPost;
+        break;
+      case 'lender':
+        html = Views.lenderDetail(params.name);
+        postFn = Views.lenderDetailPost;
         postArg = params.name;
         break;
       case 'expenses':
@@ -581,6 +600,14 @@ const App = {
       const strategy = document.querySelector('input[name="clientStrategy"]:checked').value;
       Import.state.options.clientStrategy = strategy;
 
+      // Title company picker is required (Q4: required to advance the wizard).
+      const tcEl = document.querySelector('input[name="importTitleCompany"]:checked');
+      if (!tcEl) {
+        this.toast('Pick which title company these deals go to (ATOZ or ATG)');
+        return;
+      }
+      Import.state.options.titleCompany = tcEl.value;
+
       const mapping = Import.state.mapping;
       // Validate essentials are mapped
       const mapped = new Set(mapping.filter(Boolean));
@@ -645,13 +672,20 @@ const App = {
     const expense = expenseId ? Store.getExpense(expenseId) : null;
     this.openModal(expenseModalHTML(expense, prefill));
 
-    wireCombobox(document.querySelector('[data-combobox]'));
+    // Wire ALL comboboxes in the modal — there are two now (Realtor + Lender).
+    document.querySelectorAll('#expenseForm [data-combobox]').forEach(wireCombobox);
 
     const form = document.getElementById('expenseForm');
     form.addEventListener('submit', (e) => {
       e.preventDefault();
       const obj = Object.fromEntries(new FormData(form).entries());
       obj.amount = Number(obj.amount || 0);
+      // At least one of (Realtor, Lender) must be tagged so the expense
+      // surfaces somewhere on a profile page.
+      if (!(obj.client || '').trim() && !(obj.lenderName || '').trim()) {
+        this.toast('Tag this expense to a realtor, a lender, or both');
+        return;
+      }
       if (!obj.id) delete obj.id;
       Store.saveExpense(obj);
       this.toast(expense ? 'Expense updated' : 'Expense created');
@@ -875,6 +909,97 @@ function downloadCSV(filename, rows) {
   a.click();
   URL.revokeObjectURL(url);
 }
+
+/* ==========================================================================
+   Entity edit modal — single modal for Realtor / Underwriter / Lender.
+   - Renaming cascades across deals + expenses (and Lender expenses) via
+     Store.rename* helpers.
+   - Notes + (for realtor/lender) budget target persist in *Meta sidecar
+     dictionaries on the state blob.
+   - On rename the user is redirected to the new detail URL so existing
+     bookmarks stay sensible.
+   ========================================================================== */
+
+App.openEntityEditModal = function(kind, name) {
+  const getMeta = {
+    realtor:     () => Store.getRealtorMeta(name),
+    underwriter: () => Store.getUnderwriterMeta(name),
+    lender:      () => Store.getLenderMeta(name)
+  }[kind];
+  if (!getMeta) return;
+
+  this.openModal(entityEditModalHTML(kind, name, getMeta()));
+
+  const form = document.getElementById('entityEditForm');
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const obj = Object.fromEntries(new FormData(form).entries());
+    const newName = (obj.name || '').trim();
+    if (!newName) { this.toast('Name is required'); return; }
+
+    // 1) Rename if changed (cascades across data).
+    let renamed = false;
+    if (newName !== name) {
+      const helpers = {
+        realtor:     () => Store.renameAgent(name, newName),
+        underwriter: () => Store.renameUnderwriter(name, newName),
+        lender:      () => Store.renameLender(name, newName)
+      };
+      const touched = helpers[kind]();
+      renamed = touched > 0 || newName !== name;
+    }
+
+    // 2) Save sidecar metadata under the (possibly new) name. Empty notes
+    //    and blank budgets are persisted as cleared values.
+    const patch = {
+      notes: (obj.notes || '').trim()
+    };
+    if (kind === 'realtor' || kind === 'lender') {
+      const bt = obj.budgetTarget != null && String(obj.budgetTarget).trim() !== ''
+        ? Number(obj.budgetTarget)
+        : null;
+      patch.budgetTarget = (bt !== null && Number.isFinite(bt) && bt >= 0) ? bt : null;
+    }
+    const setters = {
+      realtor:     (n, p) => Store.setRealtorMeta(n, p),
+      underwriter: (n, p) => Store.setUnderwriterMeta(n, p),
+      lender:      (n, p) => Store.setLenderMeta(n, p)
+    };
+    setters[kind](newName, patch);
+
+    this.toast(renamed ? 'Renamed and saved' : 'Saved');
+    this.closeModal();
+
+    // If we renamed and we were viewing this entity's detail page, route
+    // to the new URL so the page reflects the new name.
+    const detailRoutes = { realtor: 'agent', underwriter: 'underwriter', lender: 'lender' };
+    if (renamed && this.currentRoute === detailRoutes[kind]) {
+      location.hash = `#/${detailRoutes[kind]}/${encodeURIComponent(newName)}`;
+    } else {
+      this.render();
+    }
+  });
+};
+
+/* ==========================================================================
+   Bulk tag title-company modal — applied to a set of deal ids selected
+   on the Deals page via BulkSelect.
+   ========================================================================== */
+
+App.openBulkTagTitleCompanyModal = function(ids) {
+  if (!Array.isArray(ids) || ids.length === 0) return;
+  this.openModal(bulkTagTitleCompanyModalHTML(ids.length));
+  const form = document.getElementById('bulkTagForm');
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const tc = (new FormData(form)).get('titleCompany');
+    if (!tc) { this.toast('Pick a title company'); return; }
+    const n = Store.tagDealsTitleCompany(ids, tc);
+    this.toast(`Tagged ${n} deal${n === 1 ? '' : 's'} as ${tc}`);
+    this.closeModal();
+    this.render();
+  });
+};
 
 /* ==========================================================================
    Admin modal — list/add/remove users, assign roles

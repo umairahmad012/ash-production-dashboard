@@ -3879,3 +3879,157 @@ body.is-signed-in .auth-gate { display: none; }
   .admin-add__row { grid-template-columns: 1fr; }
   .admin-modal__foot { flex-direction: column; align-items: stretch; }
 }
+
+/* ==========================================================================
+   v=9 additions — lenders, title-company breakdown, entity edit modal,
+   bulk tag, progress bars
+   ========================================================================== */
+
+/* Title-company picker (used in deal modal + bulk tag modal + import wizard).
+   Two large radio chips, one per company. The hidden native radio drives the
+   active state via :checked + .title-co-chip:has(...) in modern browsers, with
+   a JS fallback (the deal modal also flips an `is-active` class manually). */
+.title-company-picker {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin: 8px 0 4px;
+}
+.title-co-chip {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 14px 16px;
+  border: 1.5px solid var(--line-soft, rgba(45, 90, 78, 0.18));
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: var(--sans);
+  font-size: 13px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--charcoal, #1d1d1d);
+  transition: all 0.18s ease;
+  background: rgba(255, 255, 255, 0.4);
+}
+.title-co-chip:hover {
+  border-color: var(--rich-gold, #C9A84C);
+  background: rgba(201, 168, 76, 0.06);
+}
+.title-co-chip input[type="radio"] {
+  /* Native radio is hidden but stays in the layout for forms. */
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+.title-co-chip:has(input:checked),
+.title-co-chip.is-active {
+  border-color: var(--forest-primary, #2D5A4E);
+  background: var(--forest-primary, #2D5A4E);
+  color: var(--off-white, #F8F4EF);
+}
+
+/* Dashboard "Where deals went" card — two-column grid of clickable
+   title-company tiles. Each tile drills down to a filtered Deals page. */
+.title-co-breakdown { margin-top: 24px; }
+.title-co-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  padding: 12px 24px 24px;
+}
+.title-co-card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 22px 24px;
+  border-radius: 4px;
+  border: 1px solid var(--line-soft, rgba(45, 90, 78, 0.15));
+  text-decoration: none;
+  color: inherit;
+  transition: transform 0.18s ease, box-shadow 0.18s ease;
+  background: linear-gradient(180deg, rgba(255,255,255,0.6), rgba(255,255,255,0.95));
+}
+.title-co-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 18px rgba(45, 90, 78, 0.08);
+}
+.title-co-card--forest { border-left: 4px solid var(--forest-primary, #2D5A4E); }
+.title-co-card--gold   { border-left: 4px solid var(--rich-gold, #C9A84C); }
+.title-co-card__head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.title-co-card__badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 52px;
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 3px;
+  font-family: var(--sans);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+  background: rgba(45, 90, 78, 0.08);
+  color: var(--forest-primary, #2D5A4E);
+}
+.title-co-card--gold .title-co-card__badge {
+  background: rgba(201, 168, 76, 0.18);
+  color: #8B6914;
+}
+.title-co-card__name {
+  font-family: var(--serif);
+  font-size: 22px;
+  font-weight: 400;
+  color: var(--charcoal);
+}
+.title-co-card__metric { line-height: 1.2; }
+.title-co-card__value {
+  font-family: var(--serif);
+  font-size: 36px;
+  font-weight: 400;
+  color: var(--charcoal);
+}
+.title-co-card__sub {
+  margin-top: 4px;
+  font-family: var(--sans);
+  font-size: 12px;
+  letter-spacing: 0.5px;
+  color: var(--mid-grey, #6b6b6b);
+}
+.title-co-card__bar {
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(45, 90, 78, 0.08);
+  overflow: hidden;
+}
+.title-co-card__bar-fill {
+  height: 100%;
+  background: var(--forest-primary, #2D5A4E);
+  border-radius: 3px;
+}
+.title-co-card--gold .title-co-card__bar-fill { background: var(--rich-gold, #C9A84C); }
+
+/* Generic budget / spend progress bar — used on the Lender detail page and
+   on the Realtor detail header when a budget target is set in entity meta. */
+.progress-track {
+  height: 8px;
+  border-radius: 4px;
+  background: rgba(45, 90, 78, 0.08);
+  overflow: hidden;
+}
+.progress-bar {
+  height: 100%;
+  background: var(--rich-gold, #C9A84C);
+  border-radius: 4px;
+  transition: width 0.6s ease;
+}
+.progress-bar--over { background: #B43A24; }
+
+@media (max-width: 720px) {
+  .title-co-grid { grid-template-columns: 1fr; }
+  .title-company-picker { grid-template-columns: 1fr; }
+}

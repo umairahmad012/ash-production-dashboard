@@ -18,6 +18,10 @@ const ICONS = {
   monthly: '<rect x="3" y="4" width="18" height="17" rx="2"/><path d="M16 2v4M8 2v4M3 10h18M8 14h2M8 18h2M14 14h2M14 18h2"/>',
   goals: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5.5"/><circle cx="12" cy="12" r="2" fill="currentColor"/><path d="M12 2v3M22 12h-3M12 22v-3M2 12h3"/>',
   underwriters: '<path d="M12 2 4 5v6c0 5 3.5 9 8 11 4.5-2 8-6 8-11V5l-8-3Z"/><path d="m9 12 2 2 4-4"/>',
+  // Lender icon — bank columns over a base, a dollar sign sketched on the
+  // pediment. Same visual weight as the underwriters shield so they read
+  // as a sibling section in the sidebar.
+  lenders: '<path d="M3 21h18"/><path d="M5 21V10M9 21V10M15 21V10M19 21V10"/><path d="M2 10h20L12 3 2 10Z"/><path d="M12 14v3M11 15h2"/>',
   data: '<ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v6c0 1.66 4 3 9 3s9-1.34 9-3V5"/><path d="M3 11v6c0 1.66 4 3 9 3s9-1.34 9-3v-6"/>',
   // Expense categories
   marketing: '<path d="M3 11v2a1 1 0 0 0 1 1h3l6 4V6L7 10H4a1 1 0 0 0-1 1Z"/><path d="M17 8a5 5 0 0 1 0 8M20 5a9 9 0 0 1 0 14"/>',
@@ -179,6 +183,12 @@ Views.dashboard = function(query = {}) {
   const topByRevenue = agents.filter(a => a.revenue > 0).sort((a, b) => b.revenue - a.revenue).slice(0, 8);
   const topByDeals = agents.filter(a => a.dealCount > 0).sort((a, b) => b.dealCount - a.dealCount).slice(0, 8);
 
+  // Title-company routing breakdown — respects the year filter (Q15).
+  const tcBreakdown = Store.getTitleCompanyBreakdown(scopeYear);
+  const tcMaxRev = Math.max(1, ...tcBreakdown.rows.map(r => r.revenue));
+  const tcTotalRev = tcBreakdown.rows.reduce((s, r) => s + r.revenue, 0);
+  const tcTotalDeals = tcBreakdown.rows.reduce((s, r) => s + r.dealCount, 0);
+
   // Chart year: if filter is All Time, default the chart to most recent year with data
   const chartYear = scopeYear != null ? scopeYear : (years[years.length - 1] || thisYear);
 
@@ -251,6 +261,40 @@ Views.dashboard = function(query = {}) {
           <div class="kpi__label">Client ROI</div>
           <div class="kpi__value">${o.overallRoi !== null ? fmtRoi(o.overallRoi) : '—'}</div>
           <div class="kpi__delta">${fmtMoney(o.attributedRevenue, { decimals: 0 })} attributed ÷ ${fmtMoney(o.totalExpenses, { decimals: 0 })} spend</div>
+        </div>
+      </div>
+
+      <!-- Where deals went — title company routing breakdown.
+           Always renders both ATOZ + ATG rows so the layout is stable
+           even before any deals are tagged. Bars are scaled relative to
+           the larger of the two so the contrast is readable. -->
+      <div class="panel title-co-breakdown">
+        <div class="panel__head">
+          <div>
+            <h3 class="panel__title">${icon('check', 16)} Where ${scopeLabel} Deals Went</h3>
+            <div class="panel__subtitle">Revenue routed to each title company · ${fmtNumber(tcTotalDeals)} deals · ${fmtMoney(tcTotalRev, { decimals: 0 })}${tcBreakdown.unassigned.dealCount ? ` · <span class="muted">${tcBreakdown.unassigned.dealCount} unassigned</span>` : ''}</div>
+          </div>
+        </div>
+        <div class="panel__body">
+          <div class="title-co-grid">
+            ${tcBreakdown.rows.map(r => {
+              const pct = round2((r.revenue / tcMaxRev) * 100);
+              const tone = r.name === 'ATOZ Title' ? 'forest' : 'gold';
+              return `
+                <a href="#/deals?titleCo=${encodeURIComponent(r.name)}${scopeYear != null ? `&year=${scopeYear}` : ''}" class="title-co-card title-co-card--${tone}">
+                  <div class="title-co-card__head">
+                    <span class="title-co-card__badge">${r.name === 'ATOZ Title' ? 'ATOZ' : 'ATG'}</span>
+                    <span class="title-co-card__name">${escapeHtml(r.name)}</span>
+                  </div>
+                  <div class="title-co-card__metric">
+                    <div class="title-co-card__value">${fmtMoney(r.revenue, { decimals: 0 })}</div>
+                    <div class="title-co-card__sub">${fmtNumber(r.dealCount)} deal${r.dealCount === 1 ? '' : 's'}${r.loanVolume ? ` · ${fmtMoney(r.loanVolume, { decimals: 0 })} loan vol` : ''}</div>
+                  </div>
+                  <div class="title-co-card__bar"><div class="title-co-card__bar-fill" data-target-width="${pct}" style="width:0%;"></div></div>
+                </a>
+              `;
+            }).join('')}
+          </div>
         </div>
       </div>
 
@@ -386,6 +430,8 @@ Views.dashboardPost = function(query = {}) {
 
   // Animate master filter in
   Animate.heroIn('[data-animate="hero"]');
+  // Animate title-company comparison bars
+  Animate.growBars('.title-co-card__bar-fill[data-target-width]', { stagger: 0.08, baseDelay: 0.15 });
 
   // Wire year dropdown — drive route query to re-render everything
   document.getElementById('dashYearSelect')?.addEventListener('change', (e) => {
@@ -522,6 +568,15 @@ function dealTypeTag(t) {
   return `<span class="tag tag--${cls}">${icon(txIconFor(t), 12)}<span>${escapeHtml(t)}</span></span>`;
 }
 
+// Title-company badge — strict color coding so the deals table is scannable:
+// ATOZ = forest (primary brand), ATG = gold (accent). Anything else (legacy
+// untagged deals) → subdued slate "Unassigned" tag.
+function titleCompanyTag(tc) {
+  if (tc === 'ATOZ Title') return '<span class="tag tag--forest">ATOZ</span>';
+  if (tc === 'ATG Title')  return '<span class="tag tag--gold">ATG</span>';
+  return '<span class="tag tag--subordinate">Unassigned</span>';
+}
+
 /* ========================================================================
    Deals
    ======================================================================== */
@@ -536,6 +591,7 @@ Views.deals = function(query = {}) {
   const typeF = query.type || '';
   const monthF = query.month || '';
   const agentF = query.agent || '';
+  const titleCoF = query.titleCo || '';   // 'ATOZ Title' | 'ATG Title' | 'Unassigned' | ''
 
   let filtered = deals.filter(d => {
     if (yearF && d.disbursementDate) {
@@ -547,8 +603,14 @@ Views.deals = function(query = {}) {
     }
     if (typeF && d.transactionType !== typeF) return false;
     if (agentF && d.client !== agentF && d.listingAgent !== agentF && d.sellingAgent !== agentF) return false;
+    if (titleCoF) {
+      const dealTc = TITLE_COMPANIES.includes(d.titleCompany) ? d.titleCompany : 'Unassigned';
+      if (dealTc !== titleCoF) return false;
+    }
     if (search) {
-      const blob = [d.orderNumber, d.propertyAddress, d.client, d.listingAgent, d.sellingAgent]
+      // Lender name is searchable so the user can quickly find every deal
+      // funded by a particular institution.
+      const blob = [d.orderNumber, d.propertyAddress, d.client, d.listingAgent, d.sellingAgent, d.lenderName]
         .filter(Boolean).join(' ').toLowerCase();
       if (!blob.includes(search)) return false;
     }
@@ -574,7 +636,10 @@ Views.deals = function(query = {}) {
     revenue:           d => Number(d.revenue || 0),
     month:             d => d.disbursementDate ? new Date(d.disbursementDate).getMonth() : -1,
     year:              d => d.disbursementDate ? new Date(d.disbursementDate).getFullYear() : 0,
-    underwriter:       d => d.underwriter || ''
+    underwriter:       d => d.underwriter || '',
+    lenderName:        d => d.lenderName || '',
+    loanAmount:        d => Number(d.loanAmount || 0),
+    titleCompany:      d => d.titleCompany || ''
   };
   const getter = DEAL_SORT_GETTERS[sortField] || DEAL_SORT_GETTERS.disbursementDate;
   filtered = sortItems(filtered, getter, sortDir);
@@ -616,6 +681,11 @@ Views.deals = function(query = {}) {
             <option value="">All clients</option>
             ${agents.map(a => `<option value="${escapeHtml(a.name)}" ${a.name === agentF ? 'selected' : ''}>${escapeHtml(a.name)}</option>`).join('')}
           </select>
+          <select id="filterTitleCo">
+            <option value="">All title companies</option>
+            ${TITLE_COMPANIES.map(t => `<option value="${t}" ${t === titleCoF ? 'selected' : ''}>${t}</option>`).join('')}
+            <option value="Unassigned" ${titleCoF === 'Unassigned' ? 'selected' : ''}>Unassigned</option>
+          </select>
         </div>
 
         <div class="panel__body" style="padding: 16px 32px; background: var(--forest-primary); color: var(--off-white); display: flex; justify-content: space-between; align-items: center;">
@@ -635,6 +705,7 @@ Views.deals = function(query = {}) {
             <thead><tr>
               <th class="select-col"><input type="checkbox" class="ra-check" id="bulkSelectAll" aria-label="Select all" /></th>
               ${sortableTH('orderNumber',       'Order #',           query)}
+              ${sortableTH('titleCompany',      'Title Co.',         query)}
               ${sortableTH('listingAgent',      'Listing Agent',     query)}
               ${sortableTH('sellingAgent',      'Selling Agent',     query)}
               ${sortableTH('client',            'Client',            query)}
@@ -650,10 +721,12 @@ Views.deals = function(query = {}) {
               ${sortableTH('month',             'Month',             query)}
               ${sortableTH('year',              'Year',              query)}
               ${sortableTH('underwriter',       'Underwriter',       query)}
+              ${sortableTH('lenderName',        'Lender',            query)}
+              ${sortableTH('loanAmount',        'Loan Amt',          query, 'num')}
               <th></th>
             </tr></thead>
             <tbody>
-              ${filtered.length === 0 ? `<tr><td colspan="18" class="center muted" style="padding: 64px 20px;">No deals match your filters.</td></tr>` : filtered.map(d => {
+              ${filtered.length === 0 ? `<tr><td colspan="21" class="center muted" style="padding: 64px 20px;">No deals match your filters.</td></tr>` : filtered.map(d => {
                 const attr = d.clientAttribution || computeClientSource(d);
                 const attrClass = attr === 'Direct' ? 'forest' : 'gold';
                 const listing = (d.listingAgent || '').trim();
@@ -664,10 +737,12 @@ Views.deals = function(query = {}) {
                 const dt = d.disbursementDate ? new Date(d.disbursementDate) : null;
                 const month = dt && !isNaN(dt) ? dt.toLocaleString('en-US', { month: 'short' }) : '—';
                 const year  = dt && !isNaN(dt) ? dt.getFullYear() : '—';
+                const lender = (d.lenderName || '').trim();
                 return `
                 <tr data-bulk-row>
                   <td class="select-col"><input type="checkbox" class="ra-check" data-bulk-id="${d.id}" aria-label="Select ${escapeHtml(d.orderNumber || '')}" /></td>
                   <td class="cell-strong">${escapeHtml(d.orderNumber || '—')}</td>
+                  <td>${titleCompanyTag(d.titleCompany)}</td>
                   <td>${listing ? `<button class="cell-agent ${isListingClient ? 'is-client' : ''}" data-set-client="${d.id}:listing" title="${isListingClient ? 'Current client' : 'Click to set as client'}">${isListingClient ? '<span class="cell-agent__star">★</span>' : ''}<span class="cell-agent__name">${escapeHtml(listing)}</span></button>` : '<span class="muted">—</span>'}</td>
                   <td>${selling ? `<button class="cell-agent ${isSellingClient ? 'is-client' : ''}" data-set-client="${d.id}:selling" title="${isSellingClient ? 'Current client' : 'Click to set as client'}">${isSellingClient ? '<span class="cell-agent__star">★</span>' : ''}<span class="cell-agent__name">${escapeHtml(selling)}</span></button>` : '<span class="muted">—</span>'}</td>
                   <td>${client ? `<a href="#/agent/${encodeURIComponent(client)}" class="cell-client-link">${escapeHtml(client)}</a>` : '<span class="muted">—</span>'}</td>
@@ -683,6 +758,8 @@ Views.deals = function(query = {}) {
                   <td class="muted">${month}</td>
                   <td class="muted">${year}</td>
                   <td class="muted">${escapeHtml(d.underwriter || '—')}</td>
+                  <td>${lender ? `<a href="#/lender/${encodeURIComponent(lender)}" class="cell-client-link">${escapeHtml(lender)}</a>` : '<span class="muted">—</span>'}</td>
+                  <td class="num">${d.loanAmount ? fmtMoney(d.loanAmount, { decimals: 0 }) : '—'}</td>
                   <td>
                     <div class="inline-actions">
                       <button class="icon-btn" data-edit-deal="${d.id}">Edit</button>
@@ -707,6 +784,7 @@ Views.dealsPost = function() {
       month: document.getElementById('filterMonth').value,
       type: document.getElementById('filterType').value,
       agent: document.getElementById('filterAgent').value,
+      titleCo: document.getElementById('filterTitleCo').value,
       sort: App.currentParams?.sort || '',
       dir:  App.currentParams?.dir  || ''
     };
@@ -714,7 +792,7 @@ Views.dealsPost = function() {
   };
 
   document.getElementById('dealSearch').addEventListener('input', debounce(apply, 250));
-  ['filterYear', 'filterMonth', 'filterType', 'filterAgent'].forEach(id => {
+  ['filterYear', 'filterMonth', 'filterType', 'filterAgent', 'filterTitleCo'].forEach(id => {
     document.getElementById(id).addEventListener('change', apply);
   });
 
@@ -724,21 +802,25 @@ Views.dealsPost = function() {
     const deals = Store.getDeals();
     if (!deals.length) return App.toast('No deals to export');
     const rows = [
-      ['Order #', 'Listing Agent', 'Selling Agent', 'Client', 'Client Attribution',
+      ['Order #', 'Title Company',
+       'Listing Agent', 'Selling Agent', 'Client', 'Client Attribution',
        'Property Address', 'Disbursement Date', 'Transaction Type',
        'Settlement Fee', "Lender's Policy", "Owner's Policy", 'File Fee', 'Revenue',
-       'Month', 'Year', 'Underwriter'],
+       'Month', 'Year', 'Underwriter',
+       'Lender Name', 'Loan Amount'],
       ...deals.map(d => {
         const dt = d.disbursementDate ? new Date(d.disbursementDate) : null;
         const month = dt && !isNaN(dt) ? dt.toLocaleString('en-US', { month: 'short' }) : '';
         const year  = dt && !isNaN(dt) ? dt.getFullYear() : '';
         return [
-          d.orderNumber || '', d.listingAgent || '', d.sellingAgent || '',
+          d.orderNumber || '', d.titleCompany || '',
+          d.listingAgent || '', d.sellingAgent || '',
           d.client || '', d.clientAttribution || computeClientSource(d),
           d.propertyAddress || '', d.disbursementDate || '', d.transactionType || '',
           d.settlementFee || 0, d.lendersPolicy || 0, d.ownersPolicy || 0,
           d.fileFee || 0, d.revenue || 0,
-          month, year, d.underwriter || ''
+          month, year, d.underwriter || '',
+          d.lenderName || '', d.loanAmount || 0
         ];
       })
     ];
@@ -753,6 +835,7 @@ Views.dealsPost = function() {
     month: document.getElementById('filterMonth')?.value || '',
     type: document.getElementById('filterType')?.value || '',
     agent: document.getElementById('filterAgent')?.value || '',
+    titleCo: document.getElementById('filterTitleCo')?.value || '',
     sort: App.currentParams?.sort,
     dir:  App.currentParams?.dir
   });
@@ -808,19 +891,28 @@ Views.dealsPost = function() {
     itemNoun: 'deal',
     actions: [
       {
+        label: 'Tag Title Co.',
+        icon: 'check',
+        onClick: (ids) => {
+          App.openBulkTagTitleCompanyModal(ids);
+        }
+      },
+      {
         label: 'Export CSV',
         icon: 'download',
         onClick: (ids) => {
           const deals = ids.map(id => Store.getDeal(id)).filter(Boolean);
           const rows = [
-            ['Order #', 'Disbursement', 'Property Address', 'Client', 'Listing Agent', 'Selling Agent', 'Source', 'Type', 'Settlement Fee', 'Lender Policy', 'Owner Policy', 'File Fee', 'Revenue'],
+            ['Order #', 'Title Company', 'Disbursement', 'Property Address', 'Client', 'Listing Agent', 'Selling Agent', 'Source', 'Type', 'Settlement Fee', 'Lender Policy', 'Owner Policy', 'File Fee', 'Revenue', 'Lender Name', 'Loan Amount'],
             ...deals.map(d => [
-              d.orderNumber || '', d.disbursementDate || '', d.propertyAddress || '',
+              d.orderNumber || '', d.titleCompany || '',
+              d.disbursementDate || '', d.propertyAddress || '',
               d.client || '', d.listingAgent || '', d.sellingAgent || '',
               d.clientAttribution || computeClientSource(d),
               d.transactionType || '',
               d.settlementFee || 0, d.lendersPolicy || 0, d.ownersPolicy || 0,
-              d.fileFee || 0, d.revenue || 0
+              d.fileFee || 0, d.revenue || 0,
+              d.lenderName || '', d.loanAmount || 0
             ])
           ];
           downloadCSV(`deals-export-${new Date().toISOString().slice(0,10)}.csv`, rows);
@@ -925,9 +1017,10 @@ Views.agents = function(query = {}) {
               ${sortableTH('roi',        'ROI',        query, 'num')}
               ${sortableTH('firstDeal',  'First Deal', query)}
               ${sortableTH('lastDeal',   'Last Deal',  query)}
+              <th></th>
             </tr></thead>
             <tbody>
-              ${filtered.length === 0 ? '<tr><td colspan="11" class="center muted" style="padding: 64px 20px;">No realtors match.</td></tr>' : filtered.map(a => `
+              ${filtered.length === 0 ? '<tr><td colspan="12" class="center muted" style="padding: 64px 20px;">No realtors match.</td></tr>' : filtered.map(a => `
                 <tr class="is-clickable" data-agent="${escapeHtml(a.name)}" data-bulk-row>
                   <td class="select-col"><input type="checkbox" class="ra-check" data-bulk-id="${escapeHtml(a.name)}" aria-label="Select ${escapeHtml(a.name)}" /></td>
                   <td class="cell-strong">${escapeHtml(a.name)}</td>
@@ -940,6 +1033,7 @@ Views.agents = function(query = {}) {
                   <td class="num">${fmtRoi(a.roi)}</td>
                   <td class="muted">${fmtDate(a.firstDeal)}</td>
                   <td class="muted">${fmtDate(a.lastDeal)}</td>
+                  <td><button class="icon-btn" data-edit-agent="${escapeHtml(a.name)}" title="Rename / set budget">Edit</button></td>
                 </tr>
               `).join('')}
             </tbody>
@@ -991,6 +1085,12 @@ Views.agentsPost = function() {
       if (e.target.closest('.select-col, input, button, a')) return;
       if (BulkSelect.selected && BulkSelect.selected.size > 0) return;
       location.hash = '#/agent/' + encodeURIComponent(row.getAttribute('data-agent'));
+    });
+  });
+  document.querySelectorAll('[data-edit-agent]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      App.openEntityEditModal('realtor', btn.getAttribute('data-edit-agent'));
     });
   });
 
@@ -1125,9 +1225,10 @@ Views.underwriters = function(query = {}) {
               ${sortableTH('revenue',      'Revenue',        query, 'num')}
               ${sortableTH('firstDeal',    'First Deal',     query)}
               ${sortableTH('lastDeal',     'Last Deal',      query)}
+              <th></th>
             </tr></thead>
             <tbody>
-              ${filtered.length === 0 ? `<tr><td colspan="9" class="center muted" style="padding: 64px 20px;">No underwriters recorded yet. Add an underwriter name to any deal to start tracking.</td></tr>` : filtered.map(u => `
+              ${filtered.length === 0 ? `<tr><td colspan="10" class="center muted" style="padding: 64px 20px;">No underwriters recorded yet. Add an underwriter name to any deal to start tracking.</td></tr>` : filtered.map(u => `
                 <tr class="is-clickable" data-underwriter="${escapeHtml(u.name)}">
                   <td class="cell-strong">${escapeHtml(u.name)}</td>
                   <td class="num cell-strong">${fmtNumber(u.dealCount)}</td>
@@ -1138,6 +1239,7 @@ Views.underwriters = function(query = {}) {
                   <td class="num">${fmtMoney(u.revenue, { decimals: 0 })}</td>
                   <td class="muted">${fmtDate(u.firstDeal)}</td>
                   <td class="muted">${fmtDate(u.lastDeal)}</td>
+                  <td><button class="icon-btn" data-edit-uw="${escapeHtml(u.name)}" title="Rename">Edit</button></td>
                 </tr>
               `).join('')}
             </tbody>
@@ -1184,6 +1286,12 @@ Views.underwritersPost = function() {
       location.hash = '#/underwriter/' + encodeURIComponent(row.getAttribute('data-underwriter'));
     });
   });
+  document.querySelectorAll('[data-edit-uw]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      App.openEntityEditModal('underwriter', btn.getAttribute('data-edit-uw'));
+    });
+  });
 };
 
 /* ========================================================================
@@ -1218,6 +1326,7 @@ Views.underwriterDetail = function(name) {
           <h1>${escapeHtml(uw.name)}</h1>
         </div>
         <div class="view-header__right">
+          <button class="btn btn--ghost" data-action="edit-uw">${icon('settings', 14)} Edit</button>
           <button class="btn btn--ghost" data-action="export-uw-deals">${icon('download', 14)} Export Deals</button>
         </div>
       </header>
@@ -1315,6 +1424,359 @@ Views.underwriterDetailPost = function(name) {
     downloadCSV(filename, rows);
     App.toast(`${deals.length} deal${deals.length === 1 ? '' : 's'} exported`);
   });
+
+  document.querySelector('[data-action="edit-uw"]')?.addEventListener('click', () => {
+    App.openEntityEditModal('underwriter', name);
+  });
+};
+
+/* ========================================================================
+   Lenders database (list)
+   Mirrors the Realtor Database structure but the headline metric is total
+   loan volume, not revenue. Lenders also carry a sidecar `budgetTarget`
+   (set via the rename/edit modal) so each profile can show spend-vs-budget.
+   ======================================================================== */
+
+Views.lenders = function(query = {}) {
+  const lenders = Store.getLenders();
+  const search = (query.q || '').toLowerCase();
+
+  let filtered = lenders.filter(l => !search || l.name.toLowerCase().includes(search));
+
+  const sortField = query.sort || 'loanAmount';
+  const sortDir   = query.dir  || (query.sort ? 'asc' : 'desc');
+  const LENDER_SORT_GETTERS = {
+    name:        l => l.name || '',
+    dealCount:   l => Number(l.dealCount || 0),
+    loanAmount:  l => Number(l.loanAmount || 0),
+    avgLoan:     l => Number(l.avgLoan || 0),
+    revenue:     l => Number(l.revenue || 0),
+    expenses:    l => Number(l.expenses || 0),
+    roi:         l => Number(l.roi || 0),
+    costPerDeal: l => Number(l.costPerDeal || 0),
+    firstDeal:   l => l.firstDeal || '',
+    lastDeal:    l => l.lastDeal || ''
+  };
+  const getter = LENDER_SORT_GETTERS[sortField] || LENDER_SORT_GETTERS.loanAmount;
+  filtered = sortItems(filtered, getter, sortDir);
+
+  const totalLoan = lenders.reduce((s, l) => s + l.loanAmount, 0);
+  const totalDeals = lenders.reduce((s, l) => s + l.dealCount, 0);
+  const totalSpent = lenders.reduce((s, l) => s + l.expenses, 0);
+
+  return `
+    <section class="view">
+      <header class="view-header">
+        <div class="view-header__left">
+          <div class="eyebrow">Lender Partners</div>
+          <h1>Every loan, <em>partnered.</em></h1>
+        </div>
+        <div class="view-header__right">
+          <span class="muted" style="font-size: 12px; letter-spacing: 1px; margin-right: 12px;">${lenders.length} lender${lenders.length === 1 ? '' : 's'} · ${totalDeals} total deals</span>
+          <button class="btn btn--ghost" data-action="export-all-lenders">${icon('download', 14)} Export All CSV</button>
+        </div>
+      </header>
+
+      <div class="panel">
+        <div class="panel__body panel__body--summary">
+          <div class="summary-hero" data-animate="hero">
+            <div class="summary-hero__label">Total Loan Volume</div>
+            <div class="summary-hero__value" data-countup="${totalLoan.toFixed(0)}">${fmtMoney(totalLoan, { decimals: 0 })}</div>
+            <div class="summary-hero__meta">
+              <span class="summary-hero__metaItem"><span class="summary-hero__metaValue">${totalDeals}</span> deals funded</span>
+              <span class="summary-hero__metaDot"></span>
+              <span class="summary-hero__metaItem">Across <span class="summary-hero__metaValue">${lenders.length}</span> lenders</span>
+              <span class="summary-hero__metaDot"></span>
+              <span class="summary-hero__metaItem"><span class="summary-hero__metaValue">${fmtMoney(totalSpent, { decimals: 0 })}</span> invested in relationships</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="filters">
+          <div class="filters__search">
+            <input type="search" id="lenderSearch" value="${escapeHtml(query.q || '')}" placeholder="Search by lender name" />
+          </div>
+          <div class="filters__hint muted" style="font-size: 11px; letter-spacing: 1px; text-transform: uppercase; padding: 0 6px;">Click a row for detail · Edit to rename or set a budget</div>
+        </div>
+
+        <div class="table-wrap">
+          <table class="data">
+            <thead><tr>
+              ${sortableTH('name',        'Lender',          query)}
+              ${sortableTH('dealCount',   'Deals',           query, 'num')}
+              ${sortableTH('loanAmount',  'Loan Volume',     query, 'num')}
+              ${sortableTH('avgLoan',     'Avg Loan',        query, 'num')}
+              ${sortableTH('revenue',     'Revenue',         query, 'num')}
+              ${sortableTH('expenses',    'Spent',           query, 'num')}
+              ${sortableTH('roi',         'ROI',             query, 'num')}
+              ${sortableTH('costPerDeal', 'Cost / Deal',     query, 'num')}
+              ${sortableTH('firstDeal',   'First Deal',      query)}
+              ${sortableTH('lastDeal',    'Last Deal',       query)}
+              <th></th>
+            </tr></thead>
+            <tbody>
+              ${filtered.length === 0 ? `<tr><td colspan="11" class="center muted" style="padding: 64px 20px;">No lenders yet. Add a lender name to any deal to start tracking.</td></tr>` : filtered.map(l => `
+                <tr class="is-clickable" data-lender="${escapeHtml(l.name)}">
+                  <td class="cell-strong">${escapeHtml(l.name)}</td>
+                  <td class="num cell-strong">${fmtNumber(l.dealCount)}</td>
+                  <td class="num cell-strong">${l.loanAmount ? fmtMoney(l.loanAmount, { decimals: 0 }) : '—'}</td>
+                  <td class="num muted">${l.avgLoan ? fmtMoney(l.avgLoan, { decimals: 0 }) : '—'}</td>
+                  <td class="num">${fmtMoney(l.revenue, { decimals: 0 })}</td>
+                  <td class="num">${l.expenses ? fmtMoney(l.expenses, { decimals: 0 }) : '—'}</td>
+                  <td class="num">${fmtRoi(l.roi)}</td>
+                  <td class="num muted">${l.costPerDeal ? fmtMoney(l.costPerDeal, { decimals: 0 }) : '—'}</td>
+                  <td class="muted">${fmtDate(l.firstDeal)}</td>
+                  <td class="muted">${fmtDate(l.lastDeal)}</td>
+                  <td><button class="icon-btn" data-edit-lender="${escapeHtml(l.name)}" title="Rename / set budget">Edit</button></td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  `;
+};
+
+Views.lendersPost = function() {
+  Animate.heroIn('[data-animate="hero"]');
+  Animate.countUp('.summary-hero__value[data-countup]', { duration: 1.2 });
+
+  const apply = () => App.navigate('lenders', {
+    q: document.getElementById('lenderSearch')?.value?.trim() || '',
+    sort: App.currentParams?.sort || '',
+    dir:  App.currentParams?.dir  || ''
+  });
+  document.getElementById('lenderSearch')?.addEventListener('input', debounce(apply, 250));
+
+  wireSortableHeaders('lenders', {
+    q: document.getElementById('lenderSearch')?.value?.trim() || '',
+    sort: App.currentParams?.sort,
+    dir:  App.currentParams?.dir
+  });
+
+  document.querySelector('[data-action="export-all-lenders"]')?.addEventListener('click', () => {
+    const lenders = Store.getLenders();
+    if (!lenders.length) return App.toast('No lenders to export');
+    const rows = [
+      ['Lender', 'Deals', 'Loan Volume', 'Avg Loan', 'Revenue', 'Spent', 'ROI', 'Cost / Deal', 'Budget Target', 'Purchase', 'Refinance', 'Subordinate', 'First Deal', 'Last Deal', 'Notes'],
+      ...lenders.map(l => [
+        l.name, l.dealCount, l.loanAmount, l.avgLoan, l.revenue, l.expenses, l.roi,
+        l.costPerDeal, l.budgetTarget != null ? l.budgetTarget : '',
+        l.purchase, l.refinance, l.subordinate,
+        l.firstDeal || '', l.lastDeal || '', l.notes || ''
+      ])
+    ];
+    downloadCSV(`lenders-all-${new Date().toISOString().slice(0,10)}.csv`, rows);
+    App.toast(`${lenders.length} lender${lenders.length === 1 ? '' : 's'} exported`);
+  });
+
+  // Row click → detail. Bound to the row but excludes the Edit button (it
+  // stops propagation) so the inline action doesn't navigate.
+  document.querySelectorAll('tr[data-lender]').forEach(row => {
+    row.addEventListener('click', () => {
+      location.hash = '#/lender/' + encodeURIComponent(row.getAttribute('data-lender'));
+    });
+  });
+  document.querySelectorAll('[data-edit-lender]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      App.openEntityEditModal('lender', btn.getAttribute('data-edit-lender'));
+    });
+  });
+};
+
+/* ========================================================================
+   Lender detail
+   ======================================================================== */
+
+Views.lenderDetail = function(name) {
+  const l = Store.getLender(name);
+  if (!l) {
+    return `
+      <section class="view">
+        <header class="view-header">
+          <div class="view-header__left">
+            <a href="#/lenders" class="breadcrumb">← All Lenders</a>
+            <h1>Lender not found.</h1>
+          </div>
+        </header>
+      </section>
+    `;
+  }
+
+  const deals = Store.getDealsForLender(name)
+    .slice()
+    .sort((a, b) => (b.disbursementDate || '').localeCompare(a.disbursementDate || ''));
+  const expenses = Store.getExpensesForLender(name)
+    .slice()
+    .sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+
+  // Budget meter — only renders when a target is set in lenderMeta.
+  const budgetBar = (l.budgetTarget && l.budgetTarget > 0) ? `
+    <div class="panel">
+      <div class="panel__head">
+        <div>
+          <h3 class="panel__title">${icon('expenses', 16)} Budget</h3>
+          <div class="panel__subtitle">${fmtMoney(l.expenses, { decimals: 0 })} spent of ${fmtMoney(l.budgetTarget, { decimals: 0 })} target</div>
+        </div>
+        <div class="muted" style="font-size:12px;">${l.budgetPct}% used</div>
+      </div>
+      <div class="panel__body" style="padding: 8px 24px 24px;">
+        <div class="progress-track">
+          <div class="progress-bar ${l.budgetPct > 100 ? 'progress-bar--over' : ''}" data-target-width="${Math.min(100, l.budgetPct)}" style="width:0%;"></div>
+        </div>
+      </div>
+    </div>
+  ` : '';
+
+  return `
+    <section class="view">
+      <header class="view-header">
+        <div class="view-header__left">
+          <a href="#/lenders" class="breadcrumb">← All Lenders</a>
+          <div class="eyebrow">Lender Partner</div>
+          <h1>${escapeHtml(l.name)}</h1>
+          ${l.notes ? `<div class="muted" style="margin-top:6px;max-width:60ch;">${escapeHtml(l.notes)}</div>` : ''}
+        </div>
+        <div class="view-header__right">
+          <button class="btn btn--ghost" data-action="edit-lender">${icon('settings', 14)} Edit</button>
+          <button class="btn btn--ghost" data-action="export-lender-deals">${icon('download', 14)} Export Deals</button>
+        </div>
+      </header>
+
+      <div class="stat-cards">
+        <div class="stat-card stat-card--featured" data-animate="card">
+          <div class="stat-card__label">Total Loan Volume</div>
+          <div class="stat-card__value" data-countup="${l.loanAmount.toFixed(0)}">${fmtMoney(l.loanAmount, { decimals: 0 })}</div>
+          <div class="stat-card__meta">Avg ${fmtMoney(l.avgLoan, { decimals: 0 })} / deal</div>
+        </div>
+        <div class="stat-card" data-animate="card">
+          <div class="stat-card__label">Total Deals</div>
+          <div class="stat-card__value" data-countup="${l.dealCount}">${fmtNumber(l.dealCount)}</div>
+          <div class="stat-card__meta">${l.purchase} Purchase · ${l.refinance} Refi · ${l.subordinate} Sub</div>
+        </div>
+        <div class="stat-card" data-animate="card">
+          <div class="stat-card__label">Revenue Contributed</div>
+          <div class="stat-card__value" data-countup="${l.revenue.toFixed(0)}">${fmtMoney(l.revenue, { decimals: 0 })}</div>
+          <div class="stat-card__meta">Avg ${fmtMoney(l.avgRevenue, { decimals: 0 })} / deal</div>
+        </div>
+        <div class="stat-card" data-animate="card">
+          <div class="stat-card__label">Spent on Relationship</div>
+          <div class="stat-card__value" data-countup="${l.expenses.toFixed(0)}">${fmtMoney(l.expenses, { decimals: 0 })}</div>
+          <div class="stat-card__meta">${fmtRoi(l.roi)} ROI · ${fmtMoney(l.costPerDeal, { decimals: 0 })} / deal</div>
+        </div>
+      </div>
+
+      ${budgetBar}
+
+      <div class="panel">
+        <div class="panel__head">
+          <div>
+            <h3 class="panel__title">${icon('deals', 16)} Deals Funded</h3>
+            <div class="panel__subtitle">${deals.length} deal${deals.length === 1 ? '' : 's'} funded by ${escapeHtml(l.name)}</div>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="data">
+            <thead><tr>
+              <th>Order #</th>
+              <th>Title Co.</th>
+              <th>Disbursement</th>
+              <th>Type</th>
+              <th>Property</th>
+              <th class="num">Loan Amt</th>
+              <th class="num">Revenue</th>
+            </tr></thead>
+            <tbody>
+              ${deals.length === 0 ? '<tr><td colspan="7" class="center muted" style="padding: 48px 20px;">No deals on file for this lender.</td></tr>' : deals.map(d => `
+                <tr>
+                  <td class="cell-strong">${escapeHtml(d.orderNumber || '—')}</td>
+                  <td>${titleCompanyTag(d.titleCompany)}</td>
+                  <td class="muted">${fmtDate(d.disbursementDate)}</td>
+                  <td>${dealTypeTag(d.transactionType)}</td>
+                  <td class="muted">${escapeHtml(d.propertyAddress || '—')}</td>
+                  <td class="num">${d.loanAmount ? fmtMoney(d.loanAmount, { decimals: 0 }) : '—'}</td>
+                  <td class="num cell-strong">${fmtMoney(d.revenue, { decimals: 0 })}</td>
+                </tr>
+              `).join('')}
+              ${deals.length > 0 ? `
+                <tr class="totals-row">
+                  <td colspan="5" class="num"><strong>Totals</strong></td>
+                  <td class="num cell-strong">${fmtMoney(l.loanAmount, { decimals: 0 })}</td>
+                  <td class="num cell-strong">${fmtMoney(l.revenue, { decimals: 0 })}</td>
+                </tr>
+              ` : ''}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel__head">
+          <div>
+            <h3 class="panel__title">${icon('expenses', 16)} Relationship Investments</h3>
+            <div class="panel__subtitle">${expenses.length} expense${expenses.length === 1 ? '' : 's'} tagged to ${escapeHtml(l.name)}</div>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="data">
+            <thead><tr>
+              <th>Date</th>
+              <th>Category</th>
+              <th>Description</th>
+              <th>Realtor</th>
+              <th class="num">Amount</th>
+            </tr></thead>
+            <tbody>
+              ${expenses.length === 0 ? '<tr><td colspan="5" class="center muted" style="padding: 48px 20px;">No relationship investments tagged to this lender yet.</td></tr>' : expenses.map(e => `
+                <tr>
+                  <td class="muted">${fmtDate(e.date)}</td>
+                  <td>${escapeHtml(e.expenseType || '—')}</td>
+                  <td>${escapeHtml(e.description || '—')}</td>
+                  <td class="muted">${e.client ? escapeHtml(e.client) : '—'}</td>
+                  <td class="num cell-strong">${fmtMoney(e.amount, { decimals: 0 })}</td>
+                </tr>
+              `).join('')}
+              ${expenses.length > 0 ? `
+                <tr class="totals-row">
+                  <td colspan="4" class="num"><strong>Total Spent</strong></td>
+                  <td class="num cell-strong">${fmtMoney(l.expenses, { decimals: 0 })}</td>
+                </tr>
+              ` : ''}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  `;
+};
+
+Views.lenderDetailPost = function(name) {
+  Animate.staggerIn('[data-animate="card"]', { stagger: 0.06 });
+  Animate.countUp('.stat-card__value[data-countup]', { duration: 0.9 });
+  Animate.growBars('.progress-bar[data-target-width]', { stagger: 0.04 });
+
+  document.querySelector('[data-action="edit-lender"]')?.addEventListener('click', () => {
+    App.openEntityEditModal('lender', name);
+  });
+
+  document.querySelector('[data-action="export-lender-deals"]')?.addEventListener('click', () => {
+    const l = Store.getLender(name);
+    const deals = Store.getDealsForLender(name);
+    if (!deals.length) return App.toast('No deals to export');
+    const rows = [
+      ['Lender', 'Order #', 'Title Company', 'Disbursement', 'Type', 'Property', 'Loan Amount', 'Revenue'],
+      ...deals.map(d => [
+        l.name, d.orderNumber || '', d.titleCompany || '',
+        d.disbursementDate || '', d.transactionType || '',
+        d.propertyAddress || '', Number(d.loanAmount || 0), Number(d.revenue || 0)
+      ])
+    ];
+    const filename = `lender-${name.replace(/\s+/g, '-').toLowerCase()}-${new Date().toISOString().slice(0,10)}.csv`;
+    downloadCSV(filename, rows);
+    App.toast(`${deals.length} deal${deals.length === 1 ? '' : 's'} exported`);
+  });
 };
 
 /* ========================================================================
@@ -1356,6 +1818,16 @@ Views.agentDetail = function(name) {
       <div class="profile-header">
         <div class="profile-header__eyebrow">Realtor Profile</div>
         <h2 class="profile-header__name">${escapeHtml(a.name)}</h2>
+        <div style="margin-top:8px;">
+          <button class="btn btn--ghost" data-action="edit-agent">${icon('settings', 14)} Edit / Rename</button>
+        </div>
+        ${a.notes ? `<div class="muted" style="margin-top:8px;max-width:60ch;">${escapeHtml(a.notes)}</div>` : ''}
+        ${(a.budgetTarget && a.budgetTarget > 0) ? `
+          <div style="margin-top:14px;max-width:480px;">
+            <div class="muted" style="font-size:11px;letter-spacing:1.5px;text-transform:uppercase;">${fmtMoney(a.expenses, { decimals: 0 })} spent of ${fmtMoney(a.budgetTarget, { decimals: 0 })} target · ${a.budgetPct}%</div>
+            <div class="progress-track" style="margin-top:6px;"><div class="progress-bar ${a.budgetPct > 100 ? 'progress-bar--over' : ''}" data-target-width="${Math.min(100, a.budgetPct)}" style="width:0%;"></div></div>
+          </div>
+        ` : ''}
         <div class="profile-header__meta">
           <div class="profile-header__meta-item">
             Type<strong>${escapeHtml(a.clientType)}</strong>
@@ -1490,6 +1962,10 @@ Views.agentDetail = function(name) {
 };
 
 Views.agentDetailPost = function(name) {
+  Animate.growBars('.progress-bar[data-target-width]', { stagger: 0.04 });
+  document.querySelector('[data-action="edit-agent"]')?.addEventListener('click', () => {
+    App.openEntityEditModal('realtor', name);
+  });
   document.querySelectorAll('[data-action="open-deal-modal"]').forEach(b => {
     b.addEventListener('click', () => {
       const client = b.getAttribute('data-prefill-client');
@@ -2372,6 +2848,18 @@ function importStep2HTML(state) {
       <div class="import-options__hint">Either role can be the client. An explicit "Client" column, if mapped, always wins.</div>
     </div>
 
+    <!-- Per Q3/Q4: title company is a per-batch wizard choice that stamps
+         every row in this import. Required before proceeding to Step 3. -->
+    <div class="import-options" style="border-top: 1px solid var(--line-soft); margin-top: 8px;">
+      <div class="import-options__label">Send these deals to which title company? <span style="color: var(--burgundy, #8b3a3a);">*</span></div>
+      <div class="import-options__choices">
+        ${TITLE_COMPANIES.map(tc => `
+          <label class="radio"><input type="radio" name="importTitleCompany" value="${tc}" /> <span>${tc}</span></label>
+        `).join('')}
+      </div>
+      <div class="import-options__hint">Every row in this batch will be tagged with this title company. You'll be able to retag individual deals later if needed.</div>
+    </div>
+
     <div class="modal__actions">
       <div><button type="button" class="btn btn--ghost" id="importBackTo1">← Back</button></div>
       <div class="modal__actions-right">
@@ -2590,6 +3078,31 @@ function dealModalHTML(deal, prefill = {}) {
         </div>
       </div>
 
+      <!-- Section: Lender (institution that funded the loan) -->
+      <div class="form-section-title">${icon('underwriters', 14)} Lender &amp; Loan</div>
+      <div class="form-grid">
+        <div class="field field--full">
+          <label class="field__label">Lender Name</label>
+          <input class="field__input" name="lenderName" value="${escapeHtml(d.lenderName || '')}" list="lenderList" placeholder="e.g. Wells Fargo, Rocket Mortgage" />
+          <span class="field__hint">The institution that funded the loan. Type to add a new lender.</span>
+        </div>
+        <div class="field field--full">
+          <label class="field__label">Loan Amount</label>
+          <input class="field__input" type="number" step="0.01" name="loanAmount" value="${d.loanAmount || ''}" placeholder="Optional — used in Lender database rollups" />
+        </div>
+      </div>
+
+      <!-- Section: Title Company routing -->
+      <div class="form-section-title">${icon('check', 14)} Title Company</div>
+      <div class="title-company-picker">
+        ${TITLE_COMPANIES.map(tc => `
+          <label class="title-co-chip ${(d.titleCompany === tc) ? 'is-active' : ''}">
+            <input type="radio" name="titleCompany" value="${tc}" ${d.titleCompany === tc ? 'checked' : ''} />
+            <span class="title-co-chip__name">${tc}</span>
+          </label>
+        `).join('')}
+      </div>
+
       <!-- Section: Money -->
       <div class="form-section-title">${icon('expenses', 14)} Revenue</div>
       <div class="form-grid">
@@ -2621,6 +3134,9 @@ function dealModalHTML(deal, prefill = {}) {
 
       <datalist id="agentList">
         ${Store.getAgents().map(a => `<option value="${escapeHtml(a.name)}"></option>`).join('')}
+      </datalist>
+      <datalist id="lenderList">
+        ${Store.getLenders().map(l => `<option value="${escapeHtml(l.name)}"></option>`).join('')}
       </datalist>
 
       <div class="modal__actions">
@@ -2664,15 +3180,27 @@ function expenseModalHTML(expense, prefill = {}) {
         </div>
 
         <div class="field field--full">
-          <label class="field__label">Client</label>
+          <label class="field__label">Realtor (Client)</label>
           <div class="combobox" data-combobox>
-            <input class="field__input combobox__input" type="text" name="client" autocomplete="off" value="${escapeHtml(e.client || '')}" placeholder="Start typing a name, or pick from the list" required />
+            <input class="field__input combobox__input" type="text" name="client" autocomplete="off" value="${escapeHtml(e.client || '')}" placeholder="Start typing a name, or pick from the list" />
             <button type="button" class="combobox__toggle" aria-label="Open dropdown">▾</button>
             <div class="combobox__panel" hidden>
               ${Store.getAgents().map(a => `<button type="button" class="combobox__option" data-value="${escapeHtml(a.name)}">${escapeHtml(a.name)}</button>`).join('') || '<div class="combobox__empty">No realtors yet — type to create one.</div>'}
             </div>
           </div>
-          <div class="field__hint">Not in the list? Just type a new name — the realtor will be created automatically.</div>
+          <div class="field__hint">Optional. Type to add a new realtor.</div>
+        </div>
+
+        <div class="field field--full">
+          <label class="field__label">Lender</label>
+          <div class="combobox" data-combobox>
+            <input class="field__input combobox__input" type="text" name="lenderName" autocomplete="off" value="${escapeHtml(e.lenderName || '')}" placeholder="Tag this expense to a lender (e.g. Wells Fargo)" />
+            <button type="button" class="combobox__toggle" aria-label="Open dropdown">▾</button>
+            <div class="combobox__panel" hidden>
+              ${Store.getLenders().map(l => `<button type="button" class="combobox__option" data-value="${escapeHtml(l.name)}">${escapeHtml(l.name)}</button>`).join('') || '<div class="combobox__empty">No lenders yet — type to create one.</div>'}
+            </div>
+          </div>
+          <div class="field__hint">Optional. Tag this expense to a lender so it shows on their profile and ROI. You can fill realtor, lender, or both.</div>
         </div>
 
         <div class="field field--full">
@@ -2697,6 +3225,95 @@ function expenseModalHTML(expense, prefill = {}) {
         <div class="modal__actions-right">
           <button type="button" class="btn btn--ghost" data-close-modal>Cancel</button>
           <button type="submit" class="btn btn--gold">${expense ? 'Save Changes' : 'Create Expense'}</button>
+        </div>
+      </div>
+    </form>
+  `;
+}
+
+/* ========================================================================
+   Entity edit modal HTML — Realtor / Underwriter / Lender
+
+   One modal handles all three. The fields shown depend on `kind`:
+     - realtor    : name (rename), notes, budgetTarget
+     - underwriter: name (rename), notes
+     - lender     : name (rename), notes, budgetTarget
+
+   "Rename" is destructive (cascades across every deal/expense reference)
+   so the form requires the user to confirm by leaving the new name
+   different from the current one.
+   ======================================================================== */
+
+function entityEditModalHTML(kind, name, meta = {}) {
+  const KIND_LABELS = {
+    realtor:     { title: 'Edit Realtor',     entity: 'realtor',     budget: true,  noun: 'realtor' },
+    underwriter: { title: 'Edit Underwriter', entity: 'underwriter', budget: false, noun: 'underwriter' },
+    lender:      { title: 'Edit Lender',      entity: 'lender',      budget: true,  noun: 'lender' }
+  };
+  const k = KIND_LABELS[kind] || KIND_LABELS.realtor;
+  return `
+    <div class="modal__head">
+      <div class="modal__subtitle">${k.entity}</div>
+      <h2 class="modal__title">${k.title}</h2>
+    </div>
+    <form id="entityEditForm" data-kind="${kind}" data-original-name="${escapeHtml(name)}">
+      <div class="form-grid">
+        <div class="field field--full">
+          <label class="field__label">Name</label>
+          <input class="field__input" name="name" value="${escapeHtml(name)}" required />
+          <span class="field__hint">Renaming cascades across every deal${kind === 'underwriter' ? '' : ' and expense'} that references this ${k.noun}.</span>
+        </div>
+
+        ${k.budget ? `
+        <div class="field field--full">
+          <label class="field__label">Budget Target (optional)</label>
+          <input class="field__input" type="number" step="0.01" name="budgetTarget" value="${meta.budgetTarget != null ? meta.budgetTarget : ''}" placeholder="e.g. 5000" />
+          <span class="field__hint">If set, the profile will show "$X spent of $Y target" with a progress bar.</span>
+        </div>
+        ` : ''}
+
+        <div class="field field--full">
+          <label class="field__label">Notes</label>
+          <textarea class="field__input" name="notes" rows="4" placeholder="Anything you want to remember about this ${k.noun} — relationship history, preferences, contact details, etc.">${escapeHtml(meta.notes || '')}</textarea>
+        </div>
+      </div>
+
+      <div class="modal__actions">
+        <div></div>
+        <div class="modal__actions-right">
+          <button type="button" class="btn btn--ghost" data-close-modal>Cancel</button>
+          <button type="submit" class="btn btn--gold">Save Changes</button>
+        </div>
+      </div>
+    </form>
+  `;
+}
+
+/* ========================================================================
+   Bulk title-company tag modal — used by the deals-page bulk action
+   ======================================================================== */
+
+function bulkTagTitleCompanyModalHTML(count) {
+  return `
+    <div class="modal__head">
+      <div class="modal__subtitle">Bulk action</div>
+      <h2 class="modal__title">Tag ${count} deal${count === 1 ? '' : 's'}</h2>
+    </div>
+    <form id="bulkTagForm">
+      <p class="muted" style="margin: 0 0 16px;">Set the title company for ${count} selected deal${count === 1 ? '' : 's'}. This will overwrite any existing title-company value on those deals.</p>
+      <div class="title-company-picker">
+        ${TITLE_COMPANIES.map(tc => `
+          <label class="title-co-chip">
+            <input type="radio" name="titleCompany" value="${tc}" required />
+            <span class="title-co-chip__name">${tc}</span>
+          </label>
+        `).join('')}
+      </div>
+      <div class="modal__actions">
+        <div></div>
+        <div class="modal__actions-right">
+          <button type="button" class="btn btn--ghost" data-close-modal>Cancel</button>
+          <button type="submit" class="btn btn--gold">Apply Tag</button>
         </div>
       </div>
     </form>

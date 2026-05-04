@@ -4,7 +4,11 @@
    ========================================================================== */
 
 const Import = {
-  /* The canonical set of deal fields we can map to. */
+  /* The canonical set of deal fields we can map to.
+     Note: titleCompany is intentionally NOT in this list — per Q4, the
+     title company is a per-batch wizard choice (radio in Step 2), not a
+     CSV column. Auto-mapping a "Title Company" column would conflict
+     with that contract. */
   FIELDS: [
     { key: '',                    label: '— Ignore —',            hint: '' },
     { key: 'orderNumber',         label: 'Order Number',          hint: 'e.g. VA-25-738', required: false },
@@ -22,6 +26,8 @@ const Import = {
     { key: 'settlementFee',       label: 'Settlement Fee',        hint: 'Dollars' },
     { key: 'lendersPolicy',       label: "Lender's Policy",       hint: 'Dollars' },
     { key: 'ownersPolicy',        label: "Owner's Policy",        hint: 'Dollars' },
+    { key: 'lenderName',          label: 'Lender Name',           hint: 'Funding institution (e.g. Wells Fargo)' },
+    { key: 'loanAmount',          label: 'Loan Amount',           hint: 'Dollars' },
   ],
 
   /* Common header patterns → canonical field. Lowercased, punctuation removed. */
@@ -31,7 +37,9 @@ const Import = {
     disbursementDate: [/disbursement/, /settlement\s*date/, /^date$/, /^disb/],
     transactionType: [/transaction\s*type/, /^type$/, /deal\s*type/],
     propertyAddress: [/property\s*address/, /full\s*address/, /^address$/, /^property$/],
-    underwriter: [/underwriter/, /^uw$/, /title\s*company/, /title\s*co\b/],
+    // NOTE: 'title company' / 'title co' patterns intentionally removed —
+    // those are a wizard choice, not a per-row column.
+    underwriter: [/underwriter/, /^uw$/],
     listingAgent: [/listing\s*agent/, /seller'?s?\s*agent/, /list\s*agent/],
     listingBroker: [/listing\s*broker/, /list\s*broker/, /listing\s*(firm|brokerage|company)/],
     sellingAgent: [/selling\s*agent/, /buyer'?s?\s*agent/, /sell\s*agent/],
@@ -41,6 +49,8 @@ const Import = {
     settlementFee: [/settlement\s*fee/, /^settle/],
     lendersPolicy: [/lender'?s?\s*policy/, /lender.*premium/],
     ownersPolicy: [/owner'?s?\s*policy/, /owner.*premium/],
+    lenderName: [/^lender(\s*name)?$/, /^bank$/, /loan\s*officer/, /lender\s*(institution|company)/],
+    loanAmount: [/^loan\s*(amount|amt)$/, /^loan$/, /mortgage\s*amount/, /financing\s*amount/]
   },
 
   /* Runtime state (carried across wizard steps). */
@@ -138,7 +148,7 @@ const Import = {
       if (!field) return;
       const raw = row[i];
       if (raw === undefined || raw === null || String(raw).trim() === '') return;
-      if (field === 'settlementFee' || field === 'lendersPolicy' || field === 'ownersPolicy') {
+      if (field === 'settlementFee' || field === 'lendersPolicy' || field === 'ownersPolicy' || field === 'loanAmount') {
         obj[field] = this.parseMoney(raw);
       } else if (field === 'disbursementDate' || field === 'closingDate') {
         obj[field] = this.parseDate(raw);
@@ -163,6 +173,14 @@ const Import = {
       } else if (strategy === 'sellingOnly') {
         obj.client = obj.sellingAgent || '';
       }
+    }
+
+    // Stamp the entire batch with the wizard's chosen title company.
+    // Per Q3: "the whole bulk can only be tagged as ATOZ or ATG" — the
+    // value is forced regardless of what's in the CSV (and we don't
+    // auto-map a title-company column at all, per Q4).
+    if (TITLE_COMPANIES.includes(options.titleCompany)) {
+      obj.titleCompany = options.titleCompany;
     }
 
     return obj;

@@ -9,6 +9,12 @@ const SETTINGS_KEY = 'ra_production_crm_settings_v1';
 const TRANSACTION_TYPES = ['Purchase', 'Refinance', 'Subordinate Order'];
 const EXPENSE_TYPES = ['Marketing', 'Gift', 'Meal', 'Event', 'Sponsorship', 'Referral Fee', 'Other'];
 const ATTRIBUTIONS = ['Listing Agent', 'Selling Agent', 'Both', 'Direct'];
+// Strict enum: every deal is routed to exactly one of these. Bulk imports tag
+// the whole batch with one of these values via the import wizard. The
+// dashboard's title-company breakdown only knows about these two names.
+const TITLE_COMPANIES = ['ATOZ Title', 'ATG Title'];
+// Label used for legacy / pre-feature deals that have no titleCompany set yet.
+const TITLE_COMPANY_UNASSIGNED = 'Unassigned';
 
 const MONTHS_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
@@ -83,8 +89,21 @@ function round2(n) { return Math.round(n * 100) / 100; }
 
 /* -------------------------- Store --------------------------- */
 
+// Ensure every state shape has the required arrays + sidecar metadata
+// dictionaries. Called from every hydrate path so old state blobs (which
+// predate lenders / entity metadata) get the new keys filled in.
+function ensureStateShape(state) {
+  if (!state || typeof state !== 'object') state = {};
+  if (!Array.isArray(state.deals)) state.deals = [];
+  if (!Array.isArray(state.expenses)) state.expenses = [];
+  if (!state.realtorMeta || typeof state.realtorMeta !== 'object') state.realtorMeta = {};
+  if (!state.lenderMeta || typeof state.lenderMeta !== 'object') state.lenderMeta = {};
+  if (!state.underwriterMeta || typeof state.underwriterMeta !== 'object') state.underwriterMeta = {};
+  return state;
+}
+
 const Store = {
-  state: { deals: [], expenses: [] },
+  state: { deals: [], expenses: [], realtorMeta: {}, lenderMeta: {}, underwriterMeta: {} },
   _cloudSyncTimer: null,
   _lastCloudSaveAt: null,
   _cloudReady: false,
@@ -110,7 +129,7 @@ const Store = {
           const { state } = await resp.json();
           if (state && typeof state === 'object') {
             if (state.data && Array.isArray(state.data.deals)) {
-              this.state = state.data;
+              this.state = ensureStateShape(state.data);
             }
             if (state.settings) {
               Settings._cache = {
@@ -140,9 +159,7 @@ const Store = {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (raw) {
         try {
-          this.state = JSON.parse(raw);
-          if (!Array.isArray(this.state.deals)) this.state.deals = [];
-          if (!Array.isArray(this.state.expenses)) this.state.expenses = [];
+          this.state = ensureStateShape(JSON.parse(raw));
           hydrated = true;
         } catch (e) {
           console.warn('Failed to parse saved data, reseeding', e);
@@ -170,11 +187,19 @@ const Store = {
 
   _seed() {
     const seed = window.SEED_DATA || { deals: [], expenses: [] };
-    this.state = {
-      deals: JSON.parse(JSON.stringify(seed.deals)),
-      expenses: JSON.parse(JSON.stringify(seed.expenses))
-    };
+    this.state = ensureStateShape({
+      deals: JSON.parse(JSON.stringify(seed.deals || [])),
+      expenses: JSON.parse(JSON.stringify(seed.expenses || []))
+    });
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(this.state)); } catch {}
+  },
+
+  // Wipe ALL CRM data (deals, expenses, all entity metadata). Settings and
+  // Goals are preserved. Used by the Data & Backup → "Wipe all data" action
+  // and as a one-shot recovery from a corrupted state blob.
+  wipeAll() {
+    this.state = ensureStateShape({});
+    this._save();
   },
 
   reseed() {
@@ -235,6 +260,13 @@ const Store = {
     deal.fileFee = computeFileFee(deal.transactionType);
     deal.revenue = computeRevenue(deal);
     deal.clientAttribution = deal.clientAttribution || computeClientSource(deal);
+    // New fields — normalize so the rest of the app can rely on shape.
+    deal.lenderName = (deal.lenderName || '').trim();
+    deal.loanAmount = Number(deal.loanAmount || 0);
+    // Title company is a strict enum. Anything else (or blank) → unassigned.
+    if (!TITLE_COMPANIES.includes(deal.titleCompany)) {
+      deal.titleCompany = TITLE_COMPANY_UNASSIGNED;
+    }
 
     if (deal.id) {
       const i = this.state.deals.findIndex(d => d.id === deal.id);
@@ -245,6 +277,22 @@ const Store = {
     }
     this._save();
     return deal;
+  },
+
+  // Bulk-assign a title company to a set of deals. Used by the deals-page
+  // bulk-tag action.
+  tagDealsTitleCompany(ids, titleCompany) {
+    if (!TITLE_COMPANIES.includes(titleCompany)) return 0;
+    const set = new Set(ids);
+    let n = 0;
+    for (const d of this.state.deals) {
+      if (set.has(d.id)) {
+        d.titleCompany = titleCompany;
+        n++;
+      }
+    }
+    if (n) this._save();
+    return n;
   },
 
   deleteDeal(id) {
@@ -290,6 +338,12 @@ const Store = {
   saveExpense(payload) {
     const expense = { ...payload };
     expense.amount = Number(expense.amount || 0);
+    // `client` (a realtor) and `lenderName` (a lender) are independent
+    // optional targets — an expense can be tagged to either or both. The
+    // realtor-detail view sums by client; the lender-detail view sums by
+    // lenderName.
+    expense.client = (expense.client || '').trim();
+    expense.lenderName = (expense.lenderName || '').trim();
     if (expense.id) {
       const i = this.state.expenses.findIndex(e => e.id === expense.id);
       if (i >= 0) this.state.expenses[i] = expense;
@@ -414,6 +468,14 @@ const Store = {
       else if (a.isSelling) a.clientType = 'Selling Agent';
       else a.clientType = '—';
       a.isActive = a.dealCount > 0;
+      // Surface sidecar metadata (notes, budgetTarget) so the realtor
+      // detail page can render budget-vs-spent without a second lookup.
+      const meta = (this.state.realtorMeta || {})[a.name] || {};
+      a.notes = meta.notes || '';
+      a.budgetTarget = meta.budgetTarget != null ? Number(meta.budgetTarget) : null;
+      a.budgetPct = (a.budgetTarget && a.budgetTarget > 0)
+        ? round2((a.expenses / a.budgetTarget) * 100)
+        : null;
       agents.push(a);
     }
 
@@ -585,6 +647,12 @@ const Store = {
       }
     }
 
+    // Also seed underwriters that exist only in metadata (notes/etc) but
+    // have no deals yet — so renaming-by-meta still surfaces them.
+    for (const name of Object.keys(this.state.underwriterMeta || {})) {
+      ensure(name);
+    }
+
     const out = [];
     for (const uw of byName.values()) {
       uw.ownersPolicy  = round2(uw.ownersPolicy);
@@ -593,6 +661,8 @@ const Store = {
       uw.totalPremium  = round2(uw.totalPremium);
       uw.revenue       = round2(uw.revenue);
       uw.avgPremium    = uw.dealCount > 0 ? round2(uw.totalPremium / uw.dealCount) : 0;
+      const meta = (this.state.underwriterMeta || {})[uw.name] || {};
+      uw.notes = meta.notes || '';
       out.push(uw);
     }
     out.sort((a, b) => b.dealCount - a.dealCount);
@@ -607,6 +677,270 @@ const Store = {
     if (!name) return [];
     const key = name.toLowerCase();
     return this.state.deals.filter(d => (d.underwriter || '').toLowerCase() === key);
+  },
+
+  /* ---------- Lenders (derived from deals) ----------
+     Lenders are first-class clients in this CRM (parallels realtors): they
+     get a profile page with deal count, total LOAN VOLUME (the headline
+     number), revenue contribution, expenses tagged to them, ROI, and
+     budget-vs-spent if a target is set in lenderMeta.
+
+     Aggregation walks every deal and rolls up by `lenderName`. Expenses
+     contribute when `expense.lenderName` matches.
+  ------------------------------------------------------------------ */
+  getLenders() {
+    return this._buildLenders(this.state.deals, this.state.expenses);
+  },
+
+  // Year-scoped variant — used when the dashboard is filtered to a specific
+  // calendar year, same pattern as getAgentsForYear.
+  getLendersForYear(year) {
+    if (year == null) return this.getLenders();
+    const yearDeals = this.state.deals.filter(d => {
+      if (!d.disbursementDate) return false;
+      const dt = new Date(d.disbursementDate);
+      return !isNaN(dt) && dt.getFullYear() === Number(year);
+    });
+    const yearExpenses = this.state.expenses.filter(e => {
+      if (!e.date) return false;
+      const dt = new Date(e.date);
+      return !isNaN(dt) && dt.getFullYear() === Number(year);
+    });
+    return this._buildLenders(yearDeals, yearExpenses);
+  },
+
+  _buildLenders(deals, expenses) {
+    const byName = new Map();
+    const ensure = (name) => {
+      if (!name || !name.trim()) return null;
+      const key = name.trim();
+      if (!byName.has(key)) {
+        byName.set(key, {
+          name: key,
+          dealCount: 0,
+          loanAmount: 0,     // ← headline metric per Q9
+          revenue: 0,        // full deal revenue contributed by this lender
+          expenses: 0,       // expenses tagged with lenderName === this.name
+          purchase: 0,
+          refinance: 0,
+          subordinate: 0,
+          firstDeal: null,
+          lastDeal: null
+        });
+      }
+      return byName.get(key);
+    };
+
+    for (const d of deals) {
+      const ld = ensure(d.lenderName);
+      if (!ld) continue;
+      ld.dealCount += 1;
+      ld.loanAmount += Number(d.loanAmount || 0);
+      ld.revenue   += Number(d.revenue || 0);
+      if (d.transactionType === 'Purchase') ld.purchase += 1;
+      else if (d.transactionType === 'Refinance') ld.refinance += 1;
+      else if (d.transactionType === 'Subordinate Order') ld.subordinate += 1;
+      if (d.disbursementDate) {
+        const t = d.disbursementDate;
+        if (!ld.firstDeal || t < ld.firstDeal) ld.firstDeal = t;
+        if (!ld.lastDeal  || t > ld.lastDeal)  ld.lastDeal  = t;
+      }
+    }
+
+    for (const e of expenses) {
+      const ld = ensure(e.lenderName);
+      if (!ld) continue;
+      ld.expenses += Number(e.amount || 0);
+    }
+
+    // Also seed lenders that exist only in metadata (e.g. user added a lender
+    // profile + budget but hasn't logged a deal yet). Their counts stay 0.
+    for (const name of Object.keys(this.state.lenderMeta || {})) {
+      ensure(name);
+    }
+
+    const out = [];
+    for (const ld of byName.values()) {
+      ld.loanAmount = round2(ld.loanAmount);
+      ld.revenue    = round2(ld.revenue);
+      ld.expenses   = round2(ld.expenses);
+      ld.avgLoan    = ld.dealCount > 0 ? round2(ld.loanAmount / ld.dealCount) : 0;
+      ld.avgRevenue = ld.dealCount > 0 ? round2(ld.revenue / ld.dealCount) : 0;
+      ld.costPerDeal = ld.dealCount > 0 ? round2(ld.expenses / ld.dealCount) : 0;
+      ld.roi = ld.expenses > 0 ? round2(ld.revenue / ld.expenses) : (ld.revenue > 0 ? 999 : 0);
+      // Surface metadata (notes / budgetTarget) onto the row so views don't
+      // need a second lookup.
+      const meta = (this.state.lenderMeta || {})[ld.name] || {};
+      ld.notes = meta.notes || '';
+      ld.budgetTarget = meta.budgetTarget != null ? Number(meta.budgetTarget) : null;
+      ld.budgetPct = (ld.budgetTarget && ld.budgetTarget > 0)
+        ? round2((ld.expenses / ld.budgetTarget) * 100)
+        : null;
+      ld.isActive = ld.dealCount > 0;
+      out.push(ld);
+    }
+    out.sort((a, b) => b.loanAmount - a.loanAmount);
+    return out;
+  },
+
+  getLender(name) {
+    return this.getLenders().find(l => l.name === name);
+  },
+
+  getDealsForLender(name) {
+    if (!name) return [];
+    const key = name.toLowerCase();
+    return this.state.deals.filter(d => (d.lenderName || '').toLowerCase() === key);
+  },
+
+  getExpensesForLender(name) {
+    if (!name) return [];
+    const key = name.toLowerCase();
+    return this.state.expenses.filter(e => (e.lenderName || '').toLowerCase() === key);
+  },
+
+  /* ---------- Title Company breakdown ----------
+     Powers the Dashboard "Where deals went" card. Returns one entry per
+     known title-company name (always both ATOZ + ATG, even if zero deals,
+     so the card layout stays stable). When `year` is non-null, only deals
+     disbursed in that calendar year are counted.
+  ------------------------------------------------------------------ */
+  getTitleCompanyBreakdown(year = null) {
+    const inYear = (dateStr) => {
+      if (year == null) return true;
+      if (!dateStr) return false;
+      const dt = new Date(dateStr);
+      return !isNaN(dt) && dt.getFullYear() === Number(year);
+    };
+    // Pre-create both companies with zero counts so the dashboard always
+    // renders both rows even before any tagging has been done.
+    const totals = {};
+    for (const tc of TITLE_COMPANIES) totals[tc] = { name: tc, dealCount: 0, revenue: 0, loanVolume: 0 };
+    let unassignedCount = 0;
+    let unassignedRevenue = 0;
+    for (const d of this.state.deals) {
+      if (!inYear(d.disbursementDate)) continue;
+      const tc = TITLE_COMPANIES.includes(d.titleCompany) ? d.titleCompany : null;
+      if (!tc) {
+        unassignedCount += 1;
+        unassignedRevenue += Number(d.revenue || 0);
+        continue;
+      }
+      const t = totals[tc];
+      t.dealCount += 1;
+      t.revenue   += Number(d.revenue || 0);
+      t.loanVolume += Number(d.loanAmount || 0);
+    }
+    const rows = TITLE_COMPANIES.map(tc => {
+      const t = totals[tc];
+      return {
+        name: t.name,
+        dealCount: t.dealCount,
+        revenue: round2(t.revenue),
+        loanVolume: round2(t.loanVolume)
+      };
+    });
+    return {
+      rows,
+      unassigned: {
+        dealCount: unassignedCount,
+        revenue: round2(unassignedRevenue)
+      }
+    };
+  },
+
+  /* ---------- Entity rename + sidecar metadata ----------
+     Realtors, Underwriters, and Lenders are derived from deal/expense
+     records — they don't have their own row to edit. Editing them means:
+       1. RENAME — rebrand every reference to oldName as newName across
+          deals (and expenses, where applicable). This collapses typo
+          duplicates (e.g. "Wells Fargo" vs "Wells Fargo Bank").
+       2. METADATA — separately persist `notes` (all three) and a
+          `budgetTarget` (lenders + realtors) so the profile page can
+          show "$X spent of $Y target" without re-deriving on every render.
+  ------------------------------------------------------------------ */
+  renameAgent(oldName, newName) {
+    const o = (oldName || '').trim();
+    const n = (newName || '').trim();
+    if (!o || !n || o === n) return 0;
+    let touched = 0;
+    for (const d of this.state.deals) {
+      if (d.client === o)        { d.client = n;        touched++; }
+      if (d.listingAgent === o)  { d.listingAgent = n;  touched++; }
+      if (d.sellingAgent === o)  { d.sellingAgent = n;  touched++; }
+    }
+    for (const e of this.state.expenses) {
+      if (e.client === o) { e.client = n; touched++; }
+    }
+    // Move metadata key
+    if (this.state.realtorMeta[o]) {
+      // If new name already has metadata, the new wins; the old is dropped.
+      this.state.realtorMeta[n] = this.state.realtorMeta[n] || this.state.realtorMeta[o];
+      delete this.state.realtorMeta[o];
+    }
+    if (touched) this._save();
+    return touched;
+  },
+
+  renameUnderwriter(oldName, newName) {
+    const o = (oldName || '').trim();
+    const n = (newName || '').trim();
+    if (!o || !n || o === n) return 0;
+    let touched = 0;
+    for (const d of this.state.deals) {
+      if (d.underwriter === o) { d.underwriter = n; touched++; }
+    }
+    if (this.state.underwriterMeta[o]) {
+      this.state.underwriterMeta[n] = this.state.underwriterMeta[n] || this.state.underwriterMeta[o];
+      delete this.state.underwriterMeta[o];
+    }
+    if (touched) this._save();
+    return touched;
+  },
+
+  renameLender(oldName, newName) {
+    const o = (oldName || '').trim();
+    const n = (newName || '').trim();
+    if (!o || !n || o === n) return 0;
+    let touched = 0;
+    for (const d of this.state.deals) {
+      if (d.lenderName === o) { d.lenderName = n; touched++; }
+    }
+    for (const e of this.state.expenses) {
+      if (e.lenderName === o) { e.lenderName = n; touched++; }
+    }
+    if (this.state.lenderMeta[o]) {
+      this.state.lenderMeta[n] = this.state.lenderMeta[n] || this.state.lenderMeta[o];
+      delete this.state.lenderMeta[o];
+    }
+    if (touched) this._save();
+    return touched;
+  },
+
+  // Metadata accessors. Each returns a plain object; `set` deep-merges a
+  // patch and persists. Pass `null` to fields you want cleared.
+  getRealtorMeta(name) { return (this.state.realtorMeta || {})[name] || {}; },
+  setRealtorMeta(name, patch) {
+    const cur = this.getRealtorMeta(name);
+    this.state.realtorMeta[name] = { ...cur, ...patch };
+    this._save();
+    return this.state.realtorMeta[name];
+  },
+
+  getUnderwriterMeta(name) { return (this.state.underwriterMeta || {})[name] || {}; },
+  setUnderwriterMeta(name, patch) {
+    const cur = this.getUnderwriterMeta(name);
+    this.state.underwriterMeta[name] = { ...cur, ...patch };
+    this._save();
+    return this.state.underwriterMeta[name];
+  },
+
+  getLenderMeta(name) { return (this.state.lenderMeta || {})[name] || {}; },
+  setLenderMeta(name, patch) {
+    const cur = this.getLenderMeta(name);
+    this.state.lenderMeta[name] = { ...cur, ...patch };
+    this._save();
+    return this.state.lenderMeta[name];
   },
 
   /* ---------- Duplicate detection & resolution ---------- */
@@ -668,7 +1002,8 @@ const Store = {
       'propertyAddress', 'underwriter',
       'listingAgent', 'listingBroker', 'sellingAgent', 'sellingBroker',
       'client', 'clientAttribution',
-      'settlementFee', 'lendersPolicy', 'ownersPolicy'
+      'settlementFee', 'lendersPolicy', 'ownersPolicy',
+      'lenderName', 'loanAmount', 'titleCompany'
     ];
     for (const f of mergeableFields) {
       const k = keep[f];
