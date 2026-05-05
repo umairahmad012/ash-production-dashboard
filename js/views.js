@@ -747,7 +747,7 @@ Views.deals = function(query = {}) {
               ${sortableTH('lenderName',        'Lender',            query)}
               ${sortableTH('purchasePrice',     'Purchase Price',    query, 'num')}
               ${sortableTH('loanAmount',        'Loan Amt',          query, 'num')}
-              <th></th>
+              <th class="cell-actions">Actions</th>
             </tr></thead>
             <tbody>
               ${filtered.length === 0 ? `<tr><td colspan="22" class="center muted" style="padding: 64px 20px;">No deals match your filters.</td></tr>` : filtered.map(d => {
@@ -785,7 +785,7 @@ Views.deals = function(query = {}) {
                   <td>${lender ? `<a href="#/lender/${encodeURIComponent(lender)}" class="cell-client-link">${escapeHtml(lender)}</a>` : '<span class="muted">—</span>'}</td>
                   <td class="num">${d.purchasePrice ? fmtMoney(d.purchasePrice, { decimals: 0 }) : '—'}</td>
                   <td class="num">${d.loanAmount ? fmtMoney(d.loanAmount, { decimals: 0 }) : '—'}</td>
-                  <td>
+                  <td class="cell-actions">
                     <div class="inline-actions">
                       <button class="icon-btn" data-edit-deal="${d.id}">Edit</button>
                       <button class="icon-btn icon-btn--danger" data-delete-deal="${d.id}">Delete</button>
@@ -1056,7 +1056,7 @@ Views.agents = function(query = {}) {
               ${sortableTH('roi',        'ROI',        query, 'num')}
               ${sortableTH('firstDeal',  'First Deal', query)}
               ${sortableTH('lastDeal',   'Last Deal',  query)}
-              <th></th>
+              <th class="cell-actions">Actions</th>
             </tr></thead>
             <tbody>
               ${filtered.length === 0 ? '<tr><td colspan="12" class="center muted" style="padding: 64px 20px;">No realtors match.</td></tr>' : filtered.map(a => `
@@ -1072,7 +1072,7 @@ Views.agents = function(query = {}) {
                   <td class="num">${fmtRoi(a.roi)}</td>
                   <td class="muted">${fmtDate(a.firstDeal)}</td>
                   <td class="muted">${fmtDate(a.lastDeal)}</td>
-                  <td><button class="icon-btn" data-edit-agent="${escapeHtml(a.name)}" title="Rename / set budget">Edit</button></td>
+                  <td class="cell-actions"><button class="icon-btn" data-edit-agent="${escapeHtml(a.name)}" title="Rename / set budget">Edit</button></td>
                 </tr>
               `).join('')}
             </tbody>
@@ -1264,7 +1264,7 @@ Views.underwriters = function(query = {}) {
               ${sortableTH('revenue',      'Revenue',        query, 'num')}
               ${sortableTH('firstDeal',    'First Deal',     query)}
               ${sortableTH('lastDeal',     'Last Deal',      query)}
-              <th></th>
+              <th class="cell-actions">Actions</th>
             </tr></thead>
             <tbody>
               ${filtered.length === 0 ? `<tr><td colspan="10" class="center muted" style="padding: 64px 20px;">No underwriters recorded yet. Add an underwriter name to any deal to start tracking.</td></tr>` : filtered.map(u => `
@@ -1278,7 +1278,7 @@ Views.underwriters = function(query = {}) {
                   <td class="num">${fmtMoney(u.revenue, { decimals: 0 })}</td>
                   <td class="muted">${fmtDate(u.firstDeal)}</td>
                   <td class="muted">${fmtDate(u.lastDeal)}</td>
-                  <td><button class="icon-btn" data-edit-uw="${escapeHtml(u.name)}" title="Rename">Edit</button></td>
+                  <td class="cell-actions"><button class="icon-btn" data-edit-uw="${escapeHtml(u.name)}" title="Rename">Edit</button></td>
                 </tr>
               `).join('')}
             </tbody>
@@ -1560,7 +1560,7 @@ Views.lenders = function(query = {}) {
               ${sortableTH('costPerDeal',    'Cost / Deal',     query, 'num')}
               ${sortableTH('firstDeal',      'First Deal',      query)}
               ${sortableTH('lastDeal',       'Last Deal',       query)}
-              <th></th>
+              <th class="cell-actions">Actions</th>
             </tr></thead>
             <tbody>
               ${filtered.length === 0 ? `<tr><td colspan="12" class="center muted" style="padding: 64px 20px;">No lenders yet. Add a lender name to any deal to start tracking.</td></tr>` : filtered.map(l => `
@@ -1576,7 +1576,7 @@ Views.lenders = function(query = {}) {
                   <td class="num muted">${l.costPerDeal ? fmtMoney(l.costPerDeal, { decimals: 0 }) : '—'}</td>
                   <td class="muted">${fmtDate(l.firstDeal)}</td>
                   <td class="muted">${fmtDate(l.lastDeal)}</td>
-                  <td><button class="icon-btn" data-edit-lender="${escapeHtml(l.name)}" title="Rename / set budget">Edit</button></td>
+                  <td class="cell-actions"><button class="icon-btn" data-edit-lender="${escapeHtml(l.name)}" title="Rename / set budget">Edit</button></td>
                 </tr>
               `).join('')}
             </tbody>
@@ -2203,7 +2203,7 @@ Views.expenses = function(query = {}) {
               ${sortableTH('description', 'Description', query)}
               ${sortableTH('notes',       'Notes',       query)}
               ${sortableTH('amount',      'Amount',      query, 'num')}
-              <th></th>
+              <th class="cell-actions">Actions</th>
             </tr></thead>
             <tbody>
               ${filtered.length === 0 ? '<tr><td colspan="8" class="center muted" style="padding: 64px 20px;">No expenses recorded.</td></tr>' : filtered.map(e => `
@@ -2215,7 +2215,7 @@ Views.expenses = function(query = {}) {
                   <td>${escapeHtml(e.description || '—')}</td>
                   <td class="cell-muted">${escapeHtml(e.notes || '')}</td>
                   <td class="num cell-strong">${fmtMoney(e.amount)}</td>
-                  <td>
+                  <td class="cell-actions">
                     <div class="inline-actions">
                       <button class="icon-btn" data-edit-expense="${e.id}">Edit</button>
                       <button class="icon-btn icon-btn--danger" data-delete-expense="${e.id}">Delete</button>

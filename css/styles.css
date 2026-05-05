@@ -587,6 +587,24 @@ table.data td.center { text-align: center; }
 
 table.data tbody tr:last-child td { border-bottom: none; }
 
+/* Sticky Actions column — pins Edit/Delete to the right edge so they
+   stay visible while horizontally scrolling wide tables (Deals has 22
+   columns). Each pinned cell needs an opaque background since sticky
+   positioning lets sibling cells scroll underneath. The hover rule
+   matches the row so the highlight isn't broken. */
+table.data thead th.cell-actions,
+table.data tbody td.cell-actions {
+  position: sticky;
+  right: 0;
+  z-index: 2;
+  background: var(--cream);
+  text-align: right;
+  white-space: nowrap;
+  /* Soft left edge cue showing the column is pinned. */
+  box-shadow: -10px 0 14px -10px rgba(0, 0, 0, 0.10);
+}
+table.data tbody tr:hover td.cell-actions { background: var(--gold-pale); }
+
 .cell-strong { color: var(--forest-primary); font-weight: 500; }
 .cell-muted { color: var(--mid-grey); font-size: 12px; }
 
