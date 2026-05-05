@@ -27,6 +27,7 @@ const Import = {
     { key: 'lendersPolicy',       label: "Lender's Policy",       hint: 'Dollars' },
     { key: 'ownersPolicy',        label: "Owner's Policy",        hint: 'Dollars' },
     { key: 'lenderName',          label: 'Lender Name',           hint: 'Funding institution (e.g. Wells Fargo)' },
+    { key: 'loanOfficer',         label: 'Loan Officer',          hint: 'Person you worked with at the lender' },
     { key: 'loanAmount',          label: 'Loan Amount',           hint: 'Dollars' },
     { key: 'purchasePrice',       label: 'Purchase Price',        hint: 'Property sale price (dollars)' },
   ],
@@ -50,7 +51,8 @@ const Import = {
     settlementFee: [/settlement\s*fee/, /^settle/],
     lendersPolicy: [/lender'?s?\s*policy/, /lender.*premium/],
     ownersPolicy: [/owner'?s?\s*policy/, /owner.*premium/],
-    lenderName: [/^lender(\s*name)?$/, /^bank$/, /loan\s*officer/, /lender\s*(institution|company)/],
+    lenderName: [/^lender(\s*name)?$/, /^bank$/, /lender\s*(institution|company)/],
+    loanOfficer: [/^loan\s*officer$/, /^loan\s*officer\s*name$/, /^lo\s*name$/, /^banker$/, /^lender\s*contact$/],
     loanAmount: [/^loan\s*(amount|amt)$/, /^loan$/, /mortgage\s*amount/, /financing\s*amount/],
     purchasePrice: [/^purchase\s*(price|amount|amt)$/, /^sales?\s*price$/, /^property\s*price$/, /^sale\s*price$/, /^contract\s*price$/]
   },
@@ -137,6 +139,7 @@ const Import = {
     if (s.startsWith('pur') || s.includes('buy')) return 'Purchase';
     if (s.startsWith('ref')) return 'Refinance';
     if (s.startsWith('sub') || s.includes('subord')) return 'Subordinate Order';
+    if (s.startsWith('com') || s.includes('commercial')) return 'Commercial';
     // Exact match as final fallback
     const exact = TRANSACTION_TYPES.find(t => t.toLowerCase() === s);
     return exact || '';

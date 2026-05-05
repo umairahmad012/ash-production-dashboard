@@ -394,27 +394,61 @@ const App = {
 
     const form = document.getElementById('dealForm');
 
-    // Auto recalc revenue & file fee on input change. File fees are
-    // non-retroactive: editing an existing deal preserves its stored fee
-    // (locked in at create time) UNLESS the user changes the transaction
-    // type — in which case the old fee belonged to the old type and we
-    // re-derive from current settings, matching what saveDeal will do.
+    // Live preview of the locked-in rate + revenue. Switches between the
+    // two title-company models:
+    //   ATOZ → flat File Fee subtracted from gross
+    //   ATG  → Commission % applied to gross
+    // For existing deals, preserve the stored snapshot when the
+    // (transactionType, titleCompany) pair is unchanged — matches what
+    // saveDeal will lock in. Anything else re-derives from current
+    // Settings so the preview matches the eventual save.
     const recalc = () => {
       const fd = new FormData(form);
       const tt = fd.get('transactionType');
-      const txTypeUnchanged = deal && deal.transactionType === tt;
+      const tc = fd.get('titleCompany');
+      const sameKey = deal && deal.transactionType === tt && deal.titleCompany === tc;
       const hasStoredFee = deal && deal.fileFee !== undefined && deal.fileFee !== null && deal.fileFee !== '';
-      const ff = (txTypeUnchanged && hasStoredFee) ? Number(deal.fileFee) : computeFileFee(tt);
+      const hasStoredPct = deal && deal.commissionPct !== undefined && deal.commissionPct !== null && deal.commissionPct !== '';
+      const isAtg = tc === 'ATG Title';
+
       const sf = Number(fd.get('settlementFee') || 0);
       const lp = Number(fd.get('lendersPolicy') || 0);
       const op = Number(fd.get('ownersPolicy') || 0);
-      const rev = Math.round((sf + lp + op - ff) * 100) / 100;
-      document.getElementById('fileFeePreview').value = fmtMoney(ff);
-      document.getElementById('revenuePreview').value = fmtMoney(rev);
+      const gross = sf + lp + op;
+
+      const rateLabel = document.getElementById('rateLabel');
+      const rateHint = document.getElementById('rateHint');
+      const formulaHint = document.getElementById('revenueFormulaHint');
+      const ratePreview = document.getElementById('fileFeePreview');
+      const revPreview = document.getElementById('revenuePreview');
+
+      let rev;
+      if (isAtg) {
+        const pct = (sameKey && hasStoredPct) ? Number(deal.commissionPct) : computeAtgPercentage(tt);
+        rev = Math.round(gross * (pct / 100) * 100) / 100;
+        if (rateLabel) rateLabel.textContent = 'Commission % (Auto)';
+        if (rateHint) rateHint.textContent = 'Set per ATG transaction type in Data & Backup';
+        if (formulaHint) formulaHint.textContent = '(Settle + Lender + Owner) × Commission %';
+        if (ratePreview) ratePreview.value = pct.toFixed(2) + '%';
+      } else {
+        const ff = (sameKey && hasStoredFee) ? Number(deal.fileFee) : computeFileFee(tt);
+        rev = Math.round((gross - ff) * 100) / 100;
+        if (rateLabel) rateLabel.textContent = 'File Fee (Auto)';
+        if (rateHint) rateHint.textContent = 'Set per ATOZ transaction type in Data & Backup';
+        if (formulaHint) formulaHint.textContent = 'Settle + Lender + Owner − File Fee';
+        if (ratePreview) ratePreview.value = fmtMoney(ff);
+      }
+      if (revPreview) revPreview.value = fmtMoney(rev);
     };
+    // Re-render preview on any input that affects either the model or
+    // the inputs to the formula. titleCompany is a radio group so use
+    // querySelectorAll + change listeners.
     ['transactionType', 'settlementFee', 'lendersPolicy', 'ownersPolicy'].forEach(n => {
       form.elements[n]?.addEventListener('input', recalc);
       form.elements[n]?.addEventListener('change', recalc);
+    });
+    form.querySelectorAll('input[name="titleCompany"]').forEach(r => {
+      r.addEventListener('change', recalc);
     });
     recalc();
 

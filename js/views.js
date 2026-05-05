@@ -577,6 +577,28 @@ function titleCompanyTag(tc) {
   return '<span class="tag tag--subordinate">Unassigned</span>';
 }
 
+// Compact contact strip rendered under the entity name on detail pages.
+// Skips silently when nothing's set, so legacy entries don't show empty
+// chrome. Used by realtor + lender details (underwriters don't get one
+// since they don't carry contact metadata).
+function entityContactStripHTML(entity) {
+  if (!entity) return '';
+  const parts = [];
+  if (entity.brokerage) parts.push(`<span><strong>${escapeHtml(entity.brokerage)}</strong></span>`);
+  if (entity.phone)     parts.push(`<a href="tel:${escapeHtml(entity.phone)}">${escapeHtml(entity.phone)}</a>`);
+  if (entity.email)     parts.push(`<a href="mailto:${escapeHtml(entity.email)}">${escapeHtml(entity.email)}</a>`);
+  if (Array.isArray(entity.stateLicenses) && entity.stateLicenses.length) {
+    parts.push(`<span class="muted">Licensed: ${entity.stateLicenses.map(s => escapeHtml(s)).join(', ')}</span>`);
+  }
+  if (entity.leadSource) {
+    const tone = entity.leadSource === 'Direct' ? 'forest' : 'gold';
+    parts.push(`<span class="tag tag--${tone}">${escapeHtml(entity.leadSource)}</span>`);
+  }
+  if (entity.referredBy) parts.push(`<span class="muted">Referred by ${escapeHtml(entity.referredBy)}</span>`);
+  if (!parts.length) return '';
+  return `<div style="margin-top:10px;display:flex;flex-wrap:wrap;gap:14px;align-items:center;font-size:13px;color:var(--charcoal,#1d1d1d);">${parts.join('<span class="muted" style="opacity:0.4;">·</span>')}</div>`;
+}
+
 /* ========================================================================
    Deals
    ======================================================================== */
@@ -741,7 +763,7 @@ Views.deals = function(query = {}) {
                 const year  = dt && !isNaN(dt) ? dt.getFullYear() : '—';
                 const lender = (d.lenderName || '').trim();
                 return `
-                <tr data-bulk-row>
+                <tr class="is-clickable" data-bulk-row data-deal-row="${d.id}">
                   <td class="select-col"><input type="checkbox" class="ra-check" data-bulk-id="${d.id}" aria-label="Select ${escapeHtml(d.orderNumber || '')}" /></td>
                   <td class="cell-strong">${escapeHtml(d.orderNumber || '—')}</td>
                   <td>${titleCompanyTag(d.titleCompany)}</td>
@@ -843,7 +865,20 @@ Views.dealsPost = function() {
     dir:  App.currentParams?.dir
   });
   document.querySelectorAll('[data-edit-deal]').forEach(b => {
-    b.addEventListener('click', () => App.openDealModal(b.getAttribute('data-edit-deal')));
+    b.addEventListener('click', (e) => {
+      e.stopPropagation();
+      App.openDealModal(b.getAttribute('data-edit-deal'));
+    });
+  });
+  // Whole-row click → opens edit. Skips when the user is interacting with
+  // the bulk-select checkbox, an inline button, or a link, and skips when
+  // there's an active bulk selection (so they can keep checking rows).
+  document.querySelectorAll('[data-deal-row]').forEach(row => {
+    row.addEventListener('click', (e) => {
+      if (e.target.closest('.select-col, input, button, a')) return;
+      if (BulkSelect.selected && BulkSelect.selected.size > 0) return;
+      App.openDealModal(row.getAttribute('data-deal-row'));
+    });
   });
 
   // Click agent name in table to set as client.
@@ -877,7 +912,8 @@ Views.dealsPost = function() {
     });
   });
   document.querySelectorAll('[data-delete-deal]').forEach(b => {
-    b.addEventListener('click', () => {
+    b.addEventListener('click', (e) => {
+      e.stopPropagation();
       const id = b.getAttribute('data-delete-deal');
       const d = Store.getDeal(id);
       if (!d) return;
@@ -1652,7 +1688,8 @@ Views.lenderDetail = function(name) {
           <a href="#/lenders" class="breadcrumb">← All Lenders</a>
           <div class="eyebrow">Lender Partner</div>
           <h1>${escapeHtml(l.name)}</h1>
-          ${l.notes ? `<div class="muted" style="margin-top:6px;max-width:60ch;">${escapeHtml(l.notes)}</div>` : ''}
+          ${entityContactStripHTML(l)}
+          ${l.notes ? `<div class="muted" style="margin-top:10px;max-width:60ch;">${escapeHtml(l.notes)}</div>` : ''}
         </div>
         <div class="view-header__right">
           <button class="btn btn--ghost" data-action="edit-lender">${icon('settings', 14)} Edit</button>
@@ -1842,10 +1879,11 @@ Views.agentDetail = function(name) {
       <div class="profile-header">
         <div class="profile-header__eyebrow">Realtor Profile</div>
         <h2 class="profile-header__name">${escapeHtml(a.name)}</h2>
-        <div style="margin-top:8px;">
+        ${entityContactStripHTML(a)}
+        <div style="margin-top:12px;">
           <button class="btn btn--ghost" data-action="edit-agent">${icon('settings', 14)} Edit / Rename</button>
         </div>
-        ${a.notes ? `<div class="muted" style="margin-top:8px;max-width:60ch;">${escapeHtml(a.notes)}</div>` : ''}
+        ${a.notes ? `<div class="muted" style="margin-top:10px;max-width:60ch;">${escapeHtml(a.notes)}</div>` : ''}
         ${(a.budgetTarget && a.budgetTarget > 0) ? `
           <div style="margin-top:14px;max-width:480px;">
             <div class="muted" style="font-size:11px;letter-spacing:1.5px;text-transform:uppercase;">${fmtMoney(a.expenses, { decimals: 0 })} spent of ${fmtMoney(a.budgetTarget, { decimals: 0 })} target · ${a.budgetPct}%</div>
@@ -2169,7 +2207,7 @@ Views.expenses = function(query = {}) {
             </tr></thead>
             <tbody>
               ${filtered.length === 0 ? '<tr><td colspan="8" class="center muted" style="padding: 64px 20px;">No expenses recorded.</td></tr>' : filtered.map(e => `
-                <tr data-bulk-row>
+                <tr class="is-clickable" data-bulk-row data-expense-row="${e.id}">
                   <td class="select-col"><input type="checkbox" class="ra-check" data-bulk-id="${e.id}" aria-label="Select expense" /></td>
                   <td class="muted">${fmtDate(e.date)}</td>
                   <td>${e.client ? `<a href="#/agent/${encodeURIComponent(e.client)}" style="color: var(--forest-primary); font-weight: 500;">${escapeHtml(e.client)}</a>` : '—'}</td>
@@ -2233,10 +2271,21 @@ Views.expensesPost = function() {
 
   document.querySelector('[data-action="open-expense-modal"]')?.addEventListener('click', () => App.openExpenseModal());
   document.querySelectorAll('[data-edit-expense]').forEach(b => {
-    b.addEventListener('click', () => App.openExpenseModal(b.getAttribute('data-edit-expense')));
+    b.addEventListener('click', (e) => {
+      e.stopPropagation();
+      App.openExpenseModal(b.getAttribute('data-edit-expense'));
+    });
+  });
+  document.querySelectorAll('[data-expense-row]').forEach(row => {
+    row.addEventListener('click', (e) => {
+      if (e.target.closest('.select-col, input, button, a')) return;
+      if (BulkSelect.selected && BulkSelect.selected.size > 0) return;
+      App.openExpenseModal(row.getAttribute('data-expense-row'));
+    });
   });
   document.querySelectorAll('[data-delete-expense]').forEach(b => {
-    b.addEventListener('click', () => {
+    b.addEventListener('click', (e) => {
+      e.stopPropagation();
       const id = b.getAttribute('data-delete-expense');
       if (confirm('Delete this expense? This cannot be undone.')) {
         Store.deleteExpense(id);
@@ -2447,6 +2496,7 @@ Views.data = function() {
   const o = Store.getOverview();
   const lastBackup = localStorage.getItem('ra_last_backup');
   const fees = Settings.load().fileFees;
+  const atgPcts = Settings.load().atgPercentages;
   const dupeGroups = Store.findDuplicateDeals();
 
   return `
@@ -2519,46 +2569,105 @@ Views.data = function() {
         </div>
       </div>
 
+      <!-- ATOZ Title — file-fee model -->
       <div class="panel">
         <div class="panel__head">
           <div>
-            <h3 class="panel__title">${icon('settings', 18)} File Fee Settings</h3>
-            <div class="panel__subtitle">Adjust the flat fee applied to each transaction type</div>
+            <h3 class="panel__title">${icon('settings', 18)} ATOZ Title — File Fees</h3>
+            <div class="panel__subtitle">Flat fee subtracted from gross per transaction type</div>
           </div>
         </div>
         <div class="panel__body">
           <p style="font-size: 13px; color: var(--mid-grey); margin: 0 0 24px; max-width: 640px;">
-            Every deal's revenue is computed as <strong>Settlement + Lender's Policy + Owner's Policy − File Fee</strong>.
-            Changes here apply <strong>only to deals created after the change</strong> — existing deals keep the file fee that was active when they were created. To recalculate specific older deals with today's fees, use the bulk "Recalculate" action on the Deals page.
+            For ATOZ deals: <strong>Revenue = Settlement + Lender's + Owner's − File Fee</strong>.
+            Changes apply <strong>only to new deals</strong> — existing deals keep the fee that was active when they were created.
           </p>
-          <form id="feeForm" class="form-grid" style="max-width: 600px;">
+          <form id="feeForm" class="form-grid" style="max-width: 720px;">
             <div class="field">
-              <label class="field__label">Purchase File Fee</label>
+              <label class="field__label">Purchase</label>
               <div class="field__money">
                 <span class="field__money-prefix">$</span>
                 <input class="field__input" type="number" step="0.01" min="0" name="purchase" value="${fees['Purchase']}" required />
               </div>
-              <span class="field__hint">Default: $1,555.88</span>
+              <span class="field__hint">Default $1,555.88</span>
             </div>
             <div class="field">
-              <label class="field__label">Refinance File Fee</label>
+              <label class="field__label">Refinance</label>
               <div class="field__money">
                 <span class="field__money-prefix">$</span>
                 <input class="field__input" type="number" step="0.01" min="0" name="refinance" value="${fees['Refinance']}" required />
               </div>
-              <span class="field__hint">Default: $777.94</span>
+              <span class="field__hint">Default $777.94</span>
             </div>
             <div class="field">
-              <label class="field__label">Subordinate Order File Fee</label>
+              <label class="field__label">Subordinate Order</label>
               <div class="field__money">
                 <span class="field__money-prefix">$</span>
                 <input class="field__input" type="number" step="0.01" min="0" name="subordinate" value="${fees['Subordinate Order']}" required />
               </div>
-              <span class="field__hint">Default: $0.00</span>
+              <span class="field__hint">Default $0</span>
+            </div>
+            <div class="field">
+              <label class="field__label">Commercial</label>
+              <div class="field__money">
+                <span class="field__money-prefix">$</span>
+                <input class="field__input" type="number" step="0.01" min="0" name="commercial" value="${fees['Commercial'] || 0}" required />
+              </div>
+              <span class="field__hint">Default $0</span>
             </div>
             <div class="field field--full" style="display: flex; gap: 12px; align-items: center;">
-              <button type="submit" class="btn btn--gold">${icon('check', 14)} Save (applies to new deals)</button>
+              <button type="submit" class="btn btn--gold">${icon('check', 14)} Save ATOZ (applies to new deals)</button>
               <button type="button" class="btn btn--ghost" id="resetFeesBtn">Restore Defaults</button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <!-- ATG Title — percentage model -->
+      <div class="panel">
+        <div class="panel__head">
+          <div>
+            <h3 class="panel__title">${icon('settings', 18)} ATG Title — Commission Percentages</h3>
+            <div class="panel__subtitle">Percentage of gross retained as revenue per transaction type</div>
+          </div>
+        </div>
+        <div class="panel__body">
+          <p style="font-size: 13px; color: var(--mid-grey); margin: 0 0 24px; max-width: 640px;">
+            For ATG deals: <strong>Revenue = (Settlement + Lender's + Owner's) × Percentage</strong>.
+            Changes apply <strong>only to new deals</strong> — existing deals keep the percentage that was active when they were created.
+          </p>
+          <form id="atgForm" class="form-grid" style="max-width: 720px;">
+            <div class="field">
+              <label class="field__label">Purchase</label>
+              <div class="field__money">
+                <input class="field__input" type="number" step="0.01" min="0" max="100" name="purchase" value="${atgPcts['Purchase'] || 0}" required />
+                <span class="field__money-prefix" style="left:auto;right:12px;">%</span>
+              </div>
+            </div>
+            <div class="field">
+              <label class="field__label">Refinance</label>
+              <div class="field__money">
+                <input class="field__input" type="number" step="0.01" min="0" max="100" name="refinance" value="${atgPcts['Refinance'] || 0}" required />
+                <span class="field__money-prefix" style="left:auto;right:12px;">%</span>
+              </div>
+            </div>
+            <div class="field">
+              <label class="field__label">Subordinate Order</label>
+              <div class="field__money">
+                <input class="field__input" type="number" step="0.01" min="0" max="100" name="subordinate" value="${atgPcts['Subordinate Order'] || 0}" required />
+                <span class="field__money-prefix" style="left:auto;right:12px;">%</span>
+              </div>
+            </div>
+            <div class="field">
+              <label class="field__label">Commercial</label>
+              <div class="field__money">
+                <input class="field__input" type="number" step="0.01" min="0" max="100" name="commercial" value="${atgPcts['Commercial'] || 0}" required />
+                <span class="field__money-prefix" style="left:auto;right:12px;">%</span>
+              </div>
+            </div>
+            <div class="field field--full" style="display: flex; gap: 12px; align-items: center;">
+              <button type="submit" class="btn btn--gold">${icon('check', 14)} Save ATG (applies to new deals)</button>
+              <button type="button" class="btn btn--ghost" id="resetAtgBtn">Restore Defaults (all 0%)</button>
             </div>
           </form>
         </div>
@@ -2753,6 +2862,7 @@ Views.dataPost = function() {
     App.render();
   });
 
+  // ATOZ — file fees per transaction type
   document.getElementById('feeForm')?.addEventListener('submit', (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
@@ -2760,20 +2870,43 @@ Views.dataPost = function() {
       fileFees: {
         'Purchase': Number(fd.get('purchase') || 0),
         'Refinance': Number(fd.get('refinance') || 0),
-        'Subordinate Order': Number(fd.get('subordinate') || 0)
+        'Subordinate Order': Number(fd.get('subordinate') || 0),
+        'Commercial': Number(fd.get('commercial') || 0)
       }
     });
-    // Settings changes are NON-RETROACTIVE: existing deals keep their
-    // locked-in fileFee + revenue. Only deals created AFTER this point
-    // pick up the new fees.
-    App.toast('File fees saved — applies to new deals only');
+    // NON-RETROACTIVE: existing deals keep their locked-in fileFee +
+    // revenue. Only deals created AFTER this point use the new fees.
+    App.toast('ATOZ file fees saved — applies to new deals only');
     App.render();
   });
 
   document.getElementById('resetFeesBtn')?.addEventListener('click', () => {
-    if (!confirm('Restore the original Excel defaults for all three file fees? (Existing deals will not be changed — only future deals will use the restored defaults.)')) return;
+    if (!confirm('Restore the original Excel defaults for all four ATOZ file fees? (Existing deals will not be changed — only future deals will use the restored defaults.)')) return;
     Settings.resetFileFees();
-    App.toast('File fees restored to defaults — applies to new deals only');
+    App.toast('ATOZ file fees restored — applies to new deals only');
+    App.render();
+  });
+
+  // ATG — commission percentages per transaction type
+  document.getElementById('atgForm')?.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    Settings.save({
+      atgPercentages: {
+        'Purchase': Number(fd.get('purchase') || 0),
+        'Refinance': Number(fd.get('refinance') || 0),
+        'Subordinate Order': Number(fd.get('subordinate') || 0),
+        'Commercial': Number(fd.get('commercial') || 0)
+      }
+    });
+    App.toast('ATG percentages saved — applies to new deals only');
+    App.render();
+  });
+
+  document.getElementById('resetAtgBtn')?.addEventListener('click', () => {
+    if (!confirm('Reset all ATG percentages to 0%? (Existing deals keep their locked-in rates.)')) return;
+    Settings.resetAtgPercentages();
+    App.toast('ATG percentages reset — applies to new deals only');
     App.render();
   });
 };
@@ -3106,10 +3239,15 @@ function dealModalHTML(deal, prefill = {}) {
       <!-- Section: Lender (institution that funded the loan) -->
       <div class="form-section-title">${icon('underwriters', 14)} Lender, Loan &amp; Property Value</div>
       <div class="form-grid">
-        <div class="field field--full">
+        <div class="field">
           <label class="field__label">Lender Name</label>
           <input class="field__input" name="lenderName" value="${escapeHtml(d.lenderName || '')}" list="lenderList" placeholder="e.g. Wells Fargo, Rocket Mortgage" />
-          <span class="field__hint">The institution that funded the loan. Type to add a new lender.</span>
+          <span class="field__hint">Institution that funded the loan</span>
+        </div>
+        <div class="field">
+          <label class="field__label">Loan Officer</label>
+          <input class="field__input" name="loanOfficer" value="${escapeHtml(d.loanOfficer || '')}" list="loanOfficerList" placeholder="Person you worked with at the lender" />
+          <span class="field__hint">The actual individual contact</span>
         </div>
         <div class="field">
           <label class="field__label">Purchase Price</label>
@@ -3148,16 +3286,18 @@ function dealModalHTML(deal, prefill = {}) {
           <label class="field__label">Owner's Policy</label>
           <input class="field__input" type="number" step="0.01" name="ownersPolicy" value="${d.ownersPolicy || ''}" />
         </div>
+        <!-- Revenue snapshot — dynamic. ATOZ deals show File Fee, ATG
+             deals show Commission %, label flips via JS in app.js. -->
         <div class="field">
-          <label class="field__label">File Fee (Auto)</label>
+          <label class="field__label" id="rateLabel">File Fee (Auto)</label>
           <input class="field__input field__input--calc" id="fileFeePreview" value="${fmtMoney(computeFileFee(d.transactionType || 'Purchase'))}" readonly />
-          <span class="field__hint">Set in Data &amp; Backup → File Fee Settings</span>
+          <span class="field__hint" id="rateHint">Set per title company in Data &amp; Backup</span>
         </div>
 
         <div class="field field--full">
           <label class="field__label">Revenue (Auto)</label>
           <input class="field__input field__input--calc" id="revenuePreview" readonly value="${fmtMoney(d.revenue || 0)}" />
-          <span class="field__hint">Settle + Lender + Owner − File Fee</span>
+          <span class="field__hint" id="revenueFormulaHint">Settle + Lender + Owner − File Fee</span>
         </div>
       </div>
 
@@ -3166,6 +3306,9 @@ function dealModalHTML(deal, prefill = {}) {
       </datalist>
       <datalist id="lenderList">
         ${Store.getLenders().map(l => `<option value="${escapeHtml(l.name)}"></option>`).join('')}
+      </datalist>
+      <datalist id="loanOfficerList">
+        ${[...new Set(Store.getDeals().map(x => (x.loanOfficer || '').trim()).filter(Boolean))].sort().map(n => `<option value="${escapeHtml(n)}"></option>`).join('')}
       </datalist>
 
       <div class="modal__actions">
@@ -3275,11 +3418,21 @@ function expenseModalHTML(expense, prefill = {}) {
 
 function entityEditModalHTML(kind, name, meta = {}) {
   const KIND_LABELS = {
-    realtor:     { title: 'Edit Realtor',     entity: 'realtor',     budget: true,  noun: 'realtor' },
-    underwriter: { title: 'Edit Underwriter', entity: 'underwriter', budget: false, noun: 'underwriter' },
-    lender:      { title: 'Edit Lender',      entity: 'lender',      budget: true,  noun: 'lender' }
+    realtor:     { title: 'Edit Realtor',     entity: 'realtor',     budget: true,  contact: true,  noun: 'realtor',     orgLabel: 'Brokerage' },
+    underwriter: { title: 'Edit Underwriter', entity: 'underwriter', budget: false, contact: false, noun: 'underwriter', orgLabel: '' },
+    lender:      { title: 'Edit Lender',      entity: 'lender',      budget: true,  contact: true,  noun: 'lender',      orgLabel: 'Institution' }
   };
   const k = KIND_LABELS[kind] || KIND_LABELS.realtor;
+  // State licenses are stored as an array; render as a comma list for editing.
+  const licenses = Array.isArray(meta.stateLicenses) ? meta.stateLicenses.join(', ') : '';
+  // Referred-By autocomplete pulls from BOTH realtors AND lenders so the
+  // user can pick anyone in the database who made the referral.
+  const refByOptions = [
+    ...Store.getAgents().map(a => a.name),
+    ...Store.getLenders().map(l => l.name)
+  ].filter(Boolean);
+  const refByOptionsUnique = [...new Set(refByOptions)].sort();
+
   return `
     <div class="modal__head">
       <div class="modal__subtitle">${k.entity}</div>
@@ -3293,17 +3446,53 @@ function entityEditModalHTML(kind, name, meta = {}) {
           <span class="field__hint">Renaming cascades across every deal${kind === 'underwriter' ? '' : ' and expense'} that references this ${k.noun}.</span>
         </div>
 
+        ${k.contact ? `
+        <div class="field">
+          <label class="field__label">Phone</label>
+          <input class="field__input" type="tel" name="phone" value="${escapeHtml(meta.phone || '')}" placeholder="(555) 123-4567" />
+        </div>
+        <div class="field">
+          <label class="field__label">Email</label>
+          <input class="field__input" type="email" name="email" value="${escapeHtml(meta.email || '')}" placeholder="name@example.com" />
+        </div>
+        <div class="field field--full">
+          <label class="field__label">${k.orgLabel}</label>
+          <input class="field__input" name="brokerage" value="${escapeHtml(meta.brokerage || '')}" placeholder="${kind === 'lender' ? 'e.g. parent company / institution' : 'e.g. Keller Williams, RE/MAX'}" />
+        </div>
+        <div class="field field--full">
+          <label class="field__label">State Licenses</label>
+          <input class="field__input" name="stateLicenses" value="${escapeHtml(licenses)}" placeholder="VA, MD, DC" />
+          <span class="field__hint">Comma-separated list of state codes</span>
+        </div>
+        <div class="field">
+          <label class="field__label">Lead Source</label>
+          <select class="field__select" name="leadSource">
+            <option value="" ${!meta.leadSource ? 'selected' : ''}>—</option>
+            <option value="Direct" ${meta.leadSource === 'Direct' ? 'selected' : ''}>Direct</option>
+            <option value="Indirect" ${meta.leadSource === 'Indirect' ? 'selected' : ''}>Indirect</option>
+          </select>
+        </div>
+        <div class="field">
+          <label class="field__label">Referred By</label>
+          <input class="field__input" name="referredBy" value="${escapeHtml(meta.referredBy || '')}" list="refByList" placeholder="Type a name or pick from list" />
+          <span class="field__hint">Pulls from existing realtors and lenders</span>
+        </div>
+        <datalist id="refByList">
+          ${refByOptionsUnique.map(n => `<option value="${escapeHtml(n)}"></option>`).join('')}
+        </datalist>
+        ` : ''}
+
         ${k.budget ? `
         <div class="field field--full">
           <label class="field__label">Budget Target (optional)</label>
           <input class="field__input" type="number" step="0.01" name="budgetTarget" value="${meta.budgetTarget != null ? meta.budgetTarget : ''}" placeholder="e.g. 5000" />
-          <span class="field__hint">If set, the profile will show "$X spent of $Y target" with a progress bar.</span>
+          <span class="field__hint">If set, the profile shows "$X spent of $Y target" with a progress bar.</span>
         </div>
         ` : ''}
 
         <div class="field field--full">
           <label class="field__label">Notes</label>
-          <textarea class="field__input" name="notes" rows="4" placeholder="Anything you want to remember about this ${k.noun} — relationship history, preferences, contact details, etc.">${escapeHtml(meta.notes || '')}</textarea>
+          <textarea class="field__input" name="notes" rows="4" placeholder="Anything you want to remember about this ${k.noun}.">${escapeHtml(meta.notes || '')}</textarea>
         </div>
       </div>
 

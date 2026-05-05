@@ -6,7 +6,7 @@
 const STORAGE_KEY = 'ra_production_crm_v1';
 const SETTINGS_KEY = 'ra_production_crm_settings_v1';
 
-const TRANSACTION_TYPES = ['Purchase', 'Refinance', 'Subordinate Order'];
+const TRANSACTION_TYPES = ['Purchase', 'Refinance', 'Subordinate Order', 'Commercial'];
 const EXPENSE_TYPES = ['Marketing', 'Gift', 'Meal', 'Event', 'Sponsorship', 'Referral Fee', 'Other'];
 const ATTRIBUTIONS = ['Listing Agent', 'Selling Agent', 'Both', 'Direct'];
 // Strict enum: every deal is routed to exactly one of these. Bulk imports tag
@@ -25,12 +25,30 @@ const MONTHS_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct
     - Client Source is auto-derived from Listing/Selling agent presence
 -------------------------------------------------------------------- */
 
+// ATOZ Title — flat file fees subtracted from gross. These are the legacy
+// defaults from Ash's Excel Production Sheet.
 const DEFAULT_FILE_FEES = {
   'Purchase': 1555.88,
   'Refinance': 777.94,
-  'Subordinate Order': 0
+  'Subordinate Order': 0,
+  'Commercial': 0     // user-configurable in Data & Backup
 };
 
+// ATG Title — percentage of gross retained as Ash's revenue. Defaults
+// stored as numbers (0–100); the calc divides by 100 at use-time.
+const DEFAULT_ATG_PERCENTAGES = {
+  'Purchase': 0,
+  'Refinance': 0,
+  'Subordinate Order': 0,
+  'Commercial': 0
+};
+
+// Settings carry the two title-company revenue models:
+//   fileFees       → ATOZ Title flat-fee table (per transaction type)
+//   atgPercentages → ATG Title percentage table (per transaction type, 0-100)
+// Both are user-editable in Data & Backup. Changes are NON-RETROACTIVE —
+// every existing deal carries its own locked-in snapshot of the rate that
+// was active when it was created (see saveDeal).
 const Settings = {
   _cache: null,
   load() {
@@ -39,16 +57,25 @@ const Settings = {
       const raw = localStorage.getItem(SETTINGS_KEY);
       const parsed = raw ? JSON.parse(raw) : {};
       this._cache = {
-        fileFees: { ...DEFAULT_FILE_FEES, ...(parsed.fileFees || {}) }
+        fileFees: { ...DEFAULT_FILE_FEES, ...(parsed.fileFees || {}) },
+        atgPercentages: { ...DEFAULT_ATG_PERCENTAGES, ...(parsed.atgPercentages || {}) }
       };
     } catch {
-      this._cache = { fileFees: { ...DEFAULT_FILE_FEES } };
+      this._cache = {
+        fileFees: { ...DEFAULT_FILE_FEES },
+        atgPercentages: { ...DEFAULT_ATG_PERCENTAGES }
+      };
     }
     return this._cache;
   },
   save(patch) {
     const cur = this.load();
-    const next = { ...cur, ...patch, fileFees: { ...cur.fileFees, ...(patch.fileFees || {}) } };
+    const next = {
+      ...cur,
+      ...patch,
+      fileFees: { ...cur.fileFees, ...(patch.fileFees || {}) },
+      atgPercentages: { ...cur.atgPercentages, ...(patch.atgPercentages || {}) }
+    };
     this._cache = next;
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(next));
     if (window.Store && typeof window.Store._scheduleCloudSync === 'function') window.Store._scheduleCloudSync();
@@ -56,6 +83,9 @@ const Settings = {
   },
   resetFileFees() {
     return this.save({ fileFees: { ...DEFAULT_FILE_FEES } });
+  },
+  resetAtgPercentages() {
+    return this.save({ atgPercentages: { ...DEFAULT_ATG_PERCENTAGES } });
   }
 };
 
@@ -64,18 +94,42 @@ function computeFileFee(transactionType) {
   return fees[transactionType] ?? 0;
 }
 
-// Revenue uses the deal's STORED fileFee when present — file fee settings
-// changes are not retroactive, so existing deals keep the fee that was
-// active the day they were created. Only fall back to the current settings
-// when a deal has no stored fee (legacy data, or computing a preview for a
-// brand-new deal).
+function computeAtgPercentage(transactionType) {
+  const pcts = Settings.load().atgPercentages;
+  return pcts[transactionType] ?? 0;
+}
+
+// Which revenue model applies to this deal? Driven entirely by the title
+// company tag.  ATOZ → flat file fee subtracted from gross.  ATG → a
+// percentage of gross retained.  Anything else (Unassigned, legacy) →
+// fall back to the file-fee model so old deals don't go to zero.
+function revenueModelFor(titleCompany) {
+  if (titleCompany === 'ATG Title') return 'percentage';
+  return 'fileFee';   // ATOZ Title, Unassigned, or any legacy value
+}
+
+// Revenue uses the deal's STORED snapshot when present (fileFee for the
+// fee model, commissionPct for the percentage model). Settings changes are
+// non-retroactive: existing deals keep the rate that was active when they
+// were created. Only fall back to current Settings when no snapshot
+// exists (preview for a brand-new deal, or legacy data).
 function computeRevenue(deal) {
   const sf = Number(deal.settlementFee || 0);
   const lp = Number(deal.lendersPolicy || 0);
   const op = Number(deal.ownersPolicy || 0);
+  const gross = sf + lp + op;
+  const model = revenueModelFor(deal.titleCompany);
+
+  if (model === 'percentage') {
+    const hasStoredPct = deal.commissionPct !== undefined && deal.commissionPct !== null && deal.commissionPct !== '';
+    const pct = hasStoredPct ? Number(deal.commissionPct) : computeAtgPercentage(deal.transactionType);
+    return round2(gross * (pct / 100));
+  }
+
+  // fileFee model
   const hasStoredFee = deal.fileFee !== undefined && deal.fileFee !== null && deal.fileFee !== '';
   const ff = hasStoredFee ? Number(deal.fileFee) : computeFileFee(deal.transactionType);
-  return round2(sf + lp + op - ff);
+  return round2(gross - ff);
 }
 
 function computeClientSource(deal) {
@@ -139,7 +193,8 @@ const Store = {
             }
             if (state.settings) {
               Settings._cache = {
-                fileFees: { ...DEFAULT_FILE_FEES, ...(state.settings.fileFees || {}) }
+                fileFees: { ...DEFAULT_FILE_FEES, ...(state.settings.fileFees || {}) },
+                atgPercentages: { ...DEFAULT_ATG_PERCENTAGES, ...(state.settings.atgPercentages || {}) }
               };
               try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(Settings._cache)); } catch {}
             }
@@ -264,30 +319,43 @@ const Store = {
     // Derive calculated fields
     const deal = { ...payload };
 
-    // File fee is locked in at deal-creation time. Editing an existing deal
-    // preserves its stored fee — UNLESS the transaction type changed, in
-    // which case the old fee belonged to the old type and we re-derive
-    // from the currently-configured settings. This makes file-fee setting
-    // changes non-retroactive (per user requirement) while still letting
-    // edits behave sanely when the user reclassifies a deal.
+    // Title company is a strict enum. Anything else (or blank) → unassigned.
+    if (!TITLE_COMPANIES.includes(deal.titleCompany)) {
+      deal.titleCompany = TITLE_COMPANY_UNASSIGNED;
+    }
+
+    // Revenue snapshot: lock in EITHER the file fee (ATOZ model) OR the
+    // commission percentage (ATG model) at deal-creation time. Settings
+    // changes don't retroactively rewrite either. On edit, preserve the
+    // existing snapshot UNLESS the transaction type or title company
+    // changed — in which case the old snapshot belonged to a different
+    // (txType, company) pair and we re-derive from current settings.
     const existing = deal.id ? this.state.deals.find(d => d.id === deal.id) : null;
-    const txTypeUnchanged = existing && existing.transactionType === deal.transactionType;
-    const hasStoredFee = existing && existing.fileFee !== undefined && existing.fileFee !== null && existing.fileFee !== '';
-    if (txTypeUnchanged && hasStoredFee) {
-      deal.fileFee = Number(existing.fileFee);
+    const sameKey = existing &&
+      existing.transactionType === deal.transactionType &&
+      existing.titleCompany === deal.titleCompany;
+    const model = revenueModelFor(deal.titleCompany);
+
+    if (model === 'percentage') {
+      const hasStoredPct = existing && existing.commissionPct !== undefined && existing.commissionPct !== null && existing.commissionPct !== '';
+      deal.commissionPct = (sameKey && hasStoredPct)
+        ? Number(existing.commissionPct)
+        : computeAtgPercentage(deal.transactionType);
+      deal.fileFee = 0;     // not used in percentage model; null it out for clarity
     } else {
-      deal.fileFee = computeFileFee(deal.transactionType);
+      const hasStoredFee = existing && existing.fileFee !== undefined && existing.fileFee !== null && existing.fileFee !== '';
+      deal.fileFee = (sameKey && hasStoredFee)
+        ? Number(existing.fileFee)
+        : computeFileFee(deal.transactionType);
+      deal.commissionPct = null;   // not used in file-fee model
     }
     deal.revenue = computeRevenue(deal);
     deal.clientAttribution = deal.clientAttribution || computeClientSource(deal);
     // New fields — normalize so the rest of the app can rely on shape.
     deal.lenderName = (deal.lenderName || '').trim();
+    deal.loanOfficer = (deal.loanOfficer || '').trim();
     deal.loanAmount = Number(deal.loanAmount || 0);
     deal.purchasePrice = Number(deal.purchasePrice || 0);
-    // Title company is a strict enum. Anything else (or blank) → unassigned.
-    if (!TITLE_COMPANIES.includes(deal.titleCompany)) {
-      deal.titleCompany = TITLE_COMPANY_UNASSIGNED;
-    }
 
     if (deal.id) {
       const i = this.state.deals.findIndex(d => d.id === deal.id);
@@ -493,10 +561,16 @@ const Store = {
       else if (a.isSelling) a.clientType = 'Selling Agent';
       else a.clientType = '—';
       a.isActive = a.dealCount > 0;
-      // Surface sidecar metadata (notes, budgetTarget) so the realtor
-      // detail page can render budget-vs-spent without a second lookup.
+      // Surface sidecar metadata onto the row so view code can render
+      // contact details, budget meters, etc. without a second lookup.
       const meta = (this.state.realtorMeta || {})[a.name] || {};
       a.notes = meta.notes || '';
+      a.phone = meta.phone || '';
+      a.email = meta.email || '';
+      a.brokerage = meta.brokerage || '';
+      a.stateLicenses = Array.isArray(meta.stateLicenses) ? meta.stateLicenses : [];
+      a.leadSource = meta.leadSource || '';   // 'Direct' | 'Indirect' | ''
+      a.referredBy = meta.referredBy || '';
       a.budgetTarget = meta.budgetTarget != null ? Number(meta.budgetTarget) : null;
       a.budgetPct = (a.budgetTarget && a.budgetTarget > 0)
         ? round2((a.expenses / a.budgetTarget) * 100)
@@ -801,10 +875,15 @@ const Store = {
       ld.avgRevenue = ld.dealCount > 0 ? round2(ld.revenue / ld.dealCount) : 0;
       ld.costPerDeal = ld.dealCount > 0 ? round2(ld.expenses / ld.dealCount) : 0;
       ld.roi = ld.expenses > 0 ? round2(ld.revenue / ld.expenses) : (ld.revenue > 0 ? 999 : 0);
-      // Surface metadata (notes / budgetTarget) onto the row so views don't
-      // need a second lookup.
+      // Surface sidecar metadata onto the row.
       const meta = (this.state.lenderMeta || {})[ld.name] || {};
       ld.notes = meta.notes || '';
+      ld.phone = meta.phone || '';
+      ld.email = meta.email || '';
+      ld.brokerage = meta.brokerage || '';   // institution / parent company name
+      ld.stateLicenses = Array.isArray(meta.stateLicenses) ? meta.stateLicenses : [];
+      ld.leadSource = meta.leadSource || '';
+      ld.referredBy = meta.referredBy || '';
       ld.budgetTarget = meta.budgetTarget != null ? Number(meta.budgetTarget) : null;
       ld.budgetPct = (ld.budgetTarget && ld.budgetTarget > 0)
         ? round2((ld.expenses / ld.budgetTarget) * 100)
@@ -1036,7 +1115,7 @@ const Store = {
       'listingAgent', 'listingBroker', 'sellingAgent', 'sellingBroker',
       'client', 'clientAttribution',
       'settlementFee', 'lendersPolicy', 'ownersPolicy',
-      'lenderName', 'loanAmount', 'titleCompany',
+      'lenderName', 'loanOfficer', 'loanAmount', 'titleCompany',
       'purchasePrice'
     ];
     for (const f of mergeableFields) {
@@ -1046,15 +1125,20 @@ const Store = {
       const dFilled = !(d === undefined || d === null || d === '' || d === 0);
       if (kEmpty && dFilled) merged[f] = d;
     }
-    // Re-derive computed fields. Preserve the kept deal's stored fileFee
-    // (consistent with our non-retroactive policy on fee settings changes).
-    // saveDeal will fall back to current settings only if no stored fee.
-    merged.fileFee = (keep.fileFee !== undefined && keep.fileFee !== null && keep.fileFee !== '')
-      ? Number(keep.fileFee)
-      : (drop.fileFee !== undefined && drop.fileFee !== null && drop.fileFee !== '')
-        ? Number(drop.fileFee)
-        : computeFileFee(merged.transactionType);
-    merged.revenue = computeRevenue(merged);
+    // Preserve the kept deal's locked-in revenue snapshot. saveDeal will
+    // re-key on (transactionType, titleCompany) and only re-derive if both
+    // changed during the merge.
+    const pickStored = (k, d) => {
+      const kSet = k !== undefined && k !== null && k !== '';
+      const dSet = d !== undefined && d !== null && d !== '';
+      if (kSet) return Number(k);
+      if (dSet) return Number(d);
+      return null;
+    };
+    const stickyFee = pickStored(keep.fileFee, drop.fileFee);
+    const stickyPct = pickStored(keep.commissionPct, drop.commissionPct);
+    if (stickyFee != null) merged.fileFee = stickyFee;
+    if (stickyPct != null) merged.commissionPct = stickyPct;
     merged.clientAttribution = merged.clientAttribution || computeClientSource(merged);
     this.saveDeal(merged);
     this.deleteDeal(dropId);
