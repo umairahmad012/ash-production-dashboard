@@ -2529,7 +2529,7 @@ Views.data = function() {
         <div class="panel__body">
           <p style="font-size: 13px; color: var(--mid-grey); margin: 0 0 24px; max-width: 640px;">
             Every deal's revenue is computed as <strong>Settlement + Lender's Policy + Owner's Policy − File Fee</strong>.
-            Change the File Fee below and all existing deals will recalculate automatically.
+            Changes here apply <strong>only to deals created after the change</strong> — existing deals keep the file fee that was active when they were created. To recalculate specific older deals with today's fees, use the bulk "Recalculate" action on the Deals page.
           </p>
           <form id="feeForm" class="form-grid" style="max-width: 600px;">
             <div class="field">
@@ -2557,7 +2557,7 @@ Views.data = function() {
               <span class="field__hint">Default: $0.00</span>
             </div>
             <div class="field field--full" style="display: flex; gap: 12px; align-items: center;">
-              <button type="submit" class="btn btn--gold">${icon('check', 14)} Save & Recalculate</button>
+              <button type="submit" class="btn btn--gold">${icon('check', 14)} Save (applies to new deals)</button>
               <button type="button" class="btn btn--ghost" id="resetFeesBtn">Restore Defaults</button>
             </div>
           </form>
@@ -2763,16 +2763,17 @@ Views.dataPost = function() {
         'Subordinate Order': Number(fd.get('subordinate') || 0)
       }
     });
-    const changed = Store.recomputeAllDeals();
-    App.toast(`File fees saved · ${changed} deal${changed === 1 ? '' : 's'} recalculated`);
+    // Settings changes are NON-RETROACTIVE: existing deals keep their
+    // locked-in fileFee + revenue. Only deals created AFTER this point
+    // pick up the new fees.
+    App.toast('File fees saved — applies to new deals only');
     App.render();
   });
 
   document.getElementById('resetFeesBtn')?.addEventListener('click', () => {
-    if (!confirm('Restore the original Excel defaults for all three file fees?')) return;
+    if (!confirm('Restore the original Excel defaults for all three file fees? (Existing deals will not be changed — only future deals will use the restored defaults.)')) return;
     Settings.resetFileFees();
-    const changed = Store.recomputeAllDeals();
-    App.toast(`File fees restored · ${changed} deal${changed === 1 ? '' : 's'} recalculated`);
+    App.toast('File fees restored to defaults — applies to new deals only');
     App.render();
   });
 };

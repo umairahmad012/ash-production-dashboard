@@ -394,11 +394,17 @@ const App = {
 
     const form = document.getElementById('dealForm');
 
-    // Auto recalc revenue & file fee on input change
+    // Auto recalc revenue & file fee on input change. File fees are
+    // non-retroactive: editing an existing deal preserves its stored fee
+    // (locked in at create time) UNLESS the user changes the transaction
+    // type — in which case the old fee belonged to the old type and we
+    // re-derive from current settings, matching what saveDeal will do.
     const recalc = () => {
       const fd = new FormData(form);
       const tt = fd.get('transactionType');
-      const ff = computeFileFee(tt);
+      const txTypeUnchanged = deal && deal.transactionType === tt;
+      const hasStoredFee = deal && deal.fileFee !== undefined && deal.fileFee !== null && deal.fileFee !== '';
+      const ff = (txTypeUnchanged && hasStoredFee) ? Number(deal.fileFee) : computeFileFee(tt);
       const sf = Number(fd.get('settlementFee') || 0);
       const lp = Number(fd.get('lendersPolicy') || 0);
       const op = Number(fd.get('ownersPolicy') || 0);

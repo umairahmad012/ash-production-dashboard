@@ -64,11 +64,17 @@ function computeFileFee(transactionType) {
   return fees[transactionType] ?? 0;
 }
 
+// Revenue uses the deal's STORED fileFee when present — file fee settings
+// changes are not retroactive, so existing deals keep the fee that was
+// active the day they were created. Only fall back to the current settings
+// when a deal has no stored fee (legacy data, or computing a preview for a
+// brand-new deal).
 function computeRevenue(deal) {
   const sf = Number(deal.settlementFee || 0);
   const lp = Number(deal.lendersPolicy || 0);
   const op = Number(deal.ownersPolicy || 0);
-  const ff = computeFileFee(deal.transactionType);
+  const hasStoredFee = deal.fileFee !== undefined && deal.fileFee !== null && deal.fileFee !== '';
+  const ff = hasStoredFee ? Number(deal.fileFee) : computeFileFee(deal.transactionType);
   return round2(sf + lp + op - ff);
 }
 
@@ -257,7 +263,21 @@ const Store = {
   saveDeal(payload) {
     // Derive calculated fields
     const deal = { ...payload };
-    deal.fileFee = computeFileFee(deal.transactionType);
+
+    // File fee is locked in at deal-creation time. Editing an existing deal
+    // preserves its stored fee — UNLESS the transaction type changed, in
+    // which case the old fee belonged to the old type and we re-derive
+    // from the currently-configured settings. This makes file-fee setting
+    // changes non-retroactive (per user requirement) while still letting
+    // edits behave sanely when the user reclassifies a deal.
+    const existing = deal.id ? this.state.deals.find(d => d.id === deal.id) : null;
+    const txTypeUnchanged = existing && existing.transactionType === deal.transactionType;
+    const hasStoredFee = existing && existing.fileFee !== undefined && existing.fileFee !== null && existing.fileFee !== '';
+    if (txTypeUnchanged && hasStoredFee) {
+      deal.fileFee = Number(existing.fileFee);
+    } else {
+      deal.fileFee = computeFileFee(deal.transactionType);
+    }
     deal.revenue = computeRevenue(deal);
     deal.clientAttribution = deal.clientAttribution || computeClientSource(deal);
     // New fields — normalize so the rest of the app can rely on shape.
@@ -309,8 +329,12 @@ const Store = {
     return before - this.state.deals.length;
   },
 
-  // Recompute fileFee and revenue across every deal. Used after changing
-  // the File Fee settings so stored revenue stays consistent.
+  // EXPLICIT force-recompute across every deal — overwrites each deal's
+  // stored fileFee + revenue with values derived from the CURRENT file-fee
+  // settings. NOT called automatically when settings change (that change
+  // is non-retroactive by design). Wired only to the explicit "Recalculate
+  // selected deals" bulk action on the Deals page, which lets the user
+  // opt in to the recompute on a chosen subset.
   recomputeAllDeals() {
     let changed = 0;
     for (const d of this.state.deals) {
@@ -1022,8 +1046,14 @@ const Store = {
       const dFilled = !(d === undefined || d === null || d === '' || d === 0);
       if (kEmpty && dFilled) merged[f] = d;
     }
-    // Re-derive computed fields
-    merged.fileFee = computeFileFee(merged.transactionType);
+    // Re-derive computed fields. Preserve the kept deal's stored fileFee
+    // (consistent with our non-retroactive policy on fee settings changes).
+    // saveDeal will fall back to current settings only if no stored fee.
+    merged.fileFee = (keep.fileFee !== undefined && keep.fileFee !== null && keep.fileFee !== '')
+      ? Number(keep.fileFee)
+      : (drop.fileFee !== undefined && drop.fileFee !== null && drop.fileFee !== '')
+        ? Number(drop.fileFee)
+        : computeFileFee(merged.transactionType);
     merged.revenue = computeRevenue(merged);
     merged.clientAttribution = merged.clientAttribution || computeClientSource(merged);
     this.saveDeal(merged);
