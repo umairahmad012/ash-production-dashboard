@@ -997,7 +997,14 @@ Views.dealsPost = function() {
    ======================================================================== */
 
 Views.agents = function(query = {}) {
-  const agents = Store.getAgents();
+  const years = Store.getYearsInData();
+  // Year filter: '' = all-time (default), otherwise a numeric year string.
+  // Year-scoped rollups (revenue/expenses/ROI) reflect only deals + expenses
+  // dated in that year; all-time uses the standard aggregator.
+  const yearF = query.year || '';
+  const agents = yearF
+    ? Store.getAgentsForYear(Number(yearF))
+    : Store.getAgents();
   const search = (query.q || '').toLowerCase();
 
   let filtered = agents.filter(a => !search || a.name.toLowerCase().includes(search));
@@ -1029,7 +1036,7 @@ Views.agents = function(query = {}) {
           <h1>The <em>people</em> behind the production.</h1>
         </div>
         <div class="view-header__right">
-          <span class="muted" style="font-size: 12px; letter-spacing: 1px; margin-right: 12px;">${activeCount} active · ${agents.length} total</span>
+          <span class="muted" style="font-size: 12px; letter-spacing: 1px; margin-right: 12px;">${activeCount} active · ${agents.length} total${yearF ? ` in ${yearF}` : ''}</span>
           <button class="btn btn--ghost" data-action="export-all-agents">${icon('download', 14)} Export All CSV</button>
         </div>
       </header>
@@ -1039,6 +1046,10 @@ Views.agents = function(query = {}) {
           <div class="filters__search">
             <input type="search" id="agentSearch" value="${escapeHtml(query.q || '')}" placeholder="Search by name" />
           </div>
+          <select id="filterAgentYear">
+            <option value="">All time</option>
+            ${years.map(y => `<option value="${y}" ${String(y) === yearF ? 'selected' : ''}>${y}</option>`).join('')}
+          </select>
           <div class="filters__hint muted" style="font-size: 11px; letter-spacing: 1px; text-transform: uppercase; padding: 0 6px;">Click any column header to sort</div>
         </div>
 
@@ -1087,14 +1098,17 @@ Views.agentsPost = function() {
   const apply = () => {
     App.navigate('agents', {
       q: document.getElementById('agentSearch').value.trim(),
+      year: document.getElementById('filterAgentYear')?.value || '',
       sort: App.currentParams?.sort || '',
       dir:  App.currentParams?.dir  || ''
     });
   };
   document.getElementById('agentSearch').addEventListener('input', debounce(apply, 250));
+  document.getElementById('filterAgentYear')?.addEventListener('change', apply);
 
   wireSortableHeaders('agents', {
     q: document.getElementById('agentSearch')?.value?.trim() || '',
+    year: document.getElementById('filterAgentYear')?.value || '',
     sort: App.currentParams?.sort,
     dir:  App.currentParams?.dir
   });
@@ -1195,7 +1209,11 @@ Views.agentsPost = function() {
    ======================================================================== */
 
 Views.underwriters = function(query = {}) {
-  const underwriters = Store.getUnderwriters();
+  const years = Store.getYearsInData();
+  const yearF = query.year || '';
+  const underwriters = yearF
+    ? Store.getUnderwritersForYear(Number(yearF))
+    : Store.getUnderwriters();
   const search = (query.q || '').toLowerCase();
 
   let filtered = underwriters.filter(u => !search || u.name.toLowerCase().includes(search));
@@ -1227,7 +1245,7 @@ Views.underwriters = function(query = {}) {
           <h1>Every policy, <em>underwritten.</em></h1>
         </div>
         <div class="view-header__right">
-          <span class="muted" style="font-size: 12px; letter-spacing: 1px; margin-right: 12px;">${underwriters.length} underwriter${underwriters.length === 1 ? '' : 's'} · ${totalDeals} total deals</span>
+          <span class="muted" style="font-size: 12px; letter-spacing: 1px; margin-right: 12px;">${underwriters.length} underwriter${underwriters.length === 1 ? '' : 's'} · ${totalDeals} total deals${yearF ? ` in ${yearF}` : ''}</span>
           <button class="btn btn--ghost" data-action="export-all-underwriters">${icon('download', 14)} Export All CSV</button>
         </div>
       </header>
@@ -1249,6 +1267,10 @@ Views.underwriters = function(query = {}) {
           <div class="filters__search">
             <input type="search" id="uwSearch" value="${escapeHtml(query.q || '')}" placeholder="Search by underwriter name" />
           </div>
+          <select id="filterUwYear">
+            <option value="">All time</option>
+            ${years.map(y => `<option value="${y}" ${String(y) === yearF ? 'selected' : ''}>${y}</option>`).join('')}
+          </select>
           <div class="filters__hint muted" style="font-size: 11px; letter-spacing: 1px; text-transform: uppercase; padding: 0 6px;">Click a row for detail</div>
         </div>
 
@@ -1295,13 +1317,16 @@ Views.underwritersPost = function() {
 
   const apply = () => App.navigate('underwriters', {
     q: document.getElementById('uwSearch')?.value?.trim() || '',
+    year: document.getElementById('filterUwYear')?.value || '',
     sort: App.currentParams?.sort || '',
     dir:  App.currentParams?.dir  || ''
   });
   document.getElementById('uwSearch')?.addEventListener('input', debounce(apply, 250));
+  document.getElementById('filterUwYear')?.addEventListener('change', apply);
 
   wireSortableHeaders('underwriters', {
     q: document.getElementById('uwSearch')?.value?.trim() || '',
+    year: document.getElementById('filterUwYear')?.value || '',
     sort: App.currentParams?.sort,
     dir:  App.currentParams?.dir
   });
@@ -1484,7 +1509,11 @@ Views.underwriterDetailPost = function(name) {
    ======================================================================== */
 
 Views.lenders = function(query = {}) {
-  const lenders = Store.getLenders();
+  const years = Store.getYearsInData();
+  const yearF = query.year || '';
+  const lenders = yearF
+    ? Store.getLendersForYear(Number(yearF))
+    : Store.getLenders();
   const search = (query.q || '').toLowerCase();
 
   let filtered = lenders.filter(l => !search || l.name.toLowerCase().includes(search));
@@ -1519,7 +1548,7 @@ Views.lenders = function(query = {}) {
           <h1>Every loan, <em>partnered.</em></h1>
         </div>
         <div class="view-header__right">
-          <span class="muted" style="font-size: 12px; letter-spacing: 1px; margin-right: 12px;">${lenders.length} lender${lenders.length === 1 ? '' : 's'} · ${totalDeals} total deals</span>
+          <span class="muted" style="font-size: 12px; letter-spacing: 1px; margin-right: 12px;">${lenders.length} lender${lenders.length === 1 ? '' : 's'} · ${totalDeals} total deals${yearF ? ` in ${yearF}` : ''}</span>
           <button class="btn btn--ghost" data-action="export-all-lenders">${icon('download', 14)} Export All CSV</button>
         </div>
       </header>
@@ -1543,6 +1572,10 @@ Views.lenders = function(query = {}) {
           <div class="filters__search">
             <input type="search" id="lenderSearch" value="${escapeHtml(query.q || '')}" placeholder="Search by lender name" />
           </div>
+          <select id="filterLenderYear">
+            <option value="">All time</option>
+            ${years.map(y => `<option value="${y}" ${String(y) === yearF ? 'selected' : ''}>${y}</option>`).join('')}
+          </select>
           <div class="filters__hint muted" style="font-size: 11px; letter-spacing: 1px; text-transform: uppercase; padding: 0 6px;">Click a row for detail · Edit to rename or set a budget</div>
         </div>
 
@@ -1593,13 +1626,16 @@ Views.lendersPost = function() {
 
   const apply = () => App.navigate('lenders', {
     q: document.getElementById('lenderSearch')?.value?.trim() || '',
+    year: document.getElementById('filterLenderYear')?.value || '',
     sort: App.currentParams?.sort || '',
     dir:  App.currentParams?.dir  || ''
   });
   document.getElementById('lenderSearch')?.addEventListener('input', debounce(apply, 250));
+  document.getElementById('filterLenderYear')?.addEventListener('change', apply);
 
   wireSortableHeaders('lenders', {
     q: document.getElementById('lenderSearch')?.value?.trim() || '',
+    year: document.getElementById('filterLenderYear')?.value || '',
     sort: App.currentParams?.sort,
     dir:  App.currentParams?.dir
   });

@@ -702,6 +702,24 @@ const Store = {
   // Returns one entry per unique underwriter with deal count + policy volume rollup.
   // Mirrors the structure of getAgents so the view layer can reuse patterns.
   getUnderwriters() {
+    return this._buildUnderwriters(this.state.deals, { seedFromMeta: true });
+  },
+
+  // Year-scoped variant — same shape, but rollups only count deals disbursed
+  // in the given calendar year. Underwriters with no activity in that year
+  // are still included if they exist in metadata (so user-added entries
+  // stay visible even without yearly activity).
+  getUnderwritersForYear(year) {
+    if (year == null) return this.getUnderwriters();
+    const deals = this.state.deals.filter(d => {
+      if (!d.disbursementDate) return false;
+      const dt = new Date(d.disbursementDate);
+      return !isNaN(dt) && dt.getFullYear() === Number(year);
+    });
+    return this._buildUnderwriters(deals, { seedFromMeta: false });
+  },
+
+  _buildUnderwriters(deals, { seedFromMeta = true } = {}) {
     const byName = new Map();
     const ensure = (name) => {
       if (!name || !name.trim()) return null;
@@ -726,7 +744,7 @@ const Store = {
       return byName.get(key);
     };
 
-    for (const d of this.state.deals) {
+    for (const d of deals) {
       const uw = ensure(d.underwriter);
       if (!uw) continue;
       uw.dealCount += 1;
@@ -748,10 +766,13 @@ const Store = {
       }
     }
 
-    // Also seed underwriters that exist only in metadata (notes/etc) but
-    // have no deals yet — so renaming-by-meta still surfaces them.
-    for (const name of Object.keys(this.state.underwriterMeta || {})) {
-      ensure(name);
+    // Seed underwriters that exist only in metadata (notes/etc) but have
+    // no deals yet — only when showing all-time, so a year filter doesn't
+    // surface inactive entities.
+    if (seedFromMeta) {
+      for (const name of Object.keys(this.state.underwriterMeta || {})) {
+        ensure(name);
+      }
     }
 
     const out = [];
