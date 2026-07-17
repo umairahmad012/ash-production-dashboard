@@ -8,13 +8,20 @@ const SETTINGS_KEY = 'ra_production_crm_settings_v1';
 
 const TRANSACTION_TYPES = ['Purchase', 'Refinance', 'Subordinate Order', 'Commercial'];
 const EXPENSE_TYPES = ['Marketing', 'Gift', 'Meal', 'Event', 'Sponsorship', 'Referral Fee', 'Other'];
-const ATTRIBUTIONS = ['Listing Agent', 'Selling Agent', 'Both', 'Direct'];
-// Strict enum: every deal is routed to exactly one of these. Bulk imports tag
-// the whole batch with one of these values via the import wizard. The
-// dashboard's title-company breakdown only knows about these two names.
-const TITLE_COMPANIES = ['ATOZ Title', 'ATG Title'];
+// V3: added 'Lender' and 'Loan Officer' — new client-picker chips credit
+// the deal's `client` field to the lender or loan officer name, so those
+// entities show up as first-class clients in the realtor-DB-style rollup.
+const ATTRIBUTIONS = ['Listing Agent', 'Selling Agent', 'Both', 'Direct', 'Lender', 'Loan Officer'];
+// V3: 'ATG Title' renamed to 'Alltech National Title'. Existing deals with
+// the old value get migrated on hydrate (see migrateAtgToAlltech).
+const TITLE_COMPANIES = ['ATOZ Title', 'Alltech National Title'];
 // Label used for legacy / pre-feature deals that have no titleCompany set yet.
 const TITLE_COMPANY_UNASSIGNED = 'Unassigned';
+// V3: Alltech deals are classified for commission math.
+//   Self-Generated       → tiered monthly commission (see computeAlltechTier)
+//   Bank-Affiliated Refi → flat rate based on loan amount (see BANK_RATES)
+const ALLTECH_SOURCE_TYPES = ['Self-Generated', 'Bank-Affiliated Refi'];
+const ALLTECH_SOURCE_DEFAULT = 'Self-Generated';
 
 const MONTHS_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
@@ -25,30 +32,54 @@ const MONTHS_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct
     - Client Source is auto-derived from Listing/Selling agent presence
 -------------------------------------------------------------------- */
 
-// ATOZ Title — flat file fees subtracted from gross. These are the legacy
-// defaults from Ash's Excel Production Sheet.
+// ATOZ Title — V3 spec: revenue = (gross × 40%) − fileFee[txType].
+// The 40% rate is a fixed per-title-company parameter; only the file fee
+// is per-transaction-type. Defaults updated for V3 per Ash's new spec.
+const DEFAULT_ATOZ_RATE = 40;         // stored as 0-100
 const DEFAULT_FILE_FEES = {
-  'Purchase': 1555.88,
-  'Refinance': 777.94,
-  'Subordinate Order': 0,
-  'Commercial': 0     // user-configurable in Data & Backup
-};
-
-// ATG Title — percentage of gross retained as Ash's revenue. Defaults
-// stored as numbers (0–100); the calc divides by 100 at use-time.
-const DEFAULT_ATG_PERCENTAGES = {
-  'Purchase': 0,
-  'Refinance': 0,
+  'Purchase': 1000,
+  'Refinance': 700,
   'Subordinate Order': 0,
   'Commercial': 0
 };
 
+// Alltech National Title (was ATG Title) — V3 spec.
+//
+// Self-Generated deals: a TIERED commission based on the SUM of that
+// month's Self-Generated gross. When a new deal lands mid-month, EVERY
+// Self-Gen deal in the same calendar month re-derives at the tier the
+// month has now reached (see cascadeAlltechMonth). Bank-Affiliated Refi
+// deals are excluded from the tier calc.
+//
+// Thresholds are stored as an ordered ascending list; the tier that
+// applies is the highest one whose threshold ≤ monthly total.
+const DEFAULT_ALLTECH_TIERS = [
+  { minGross: 0,      rate: 20 },  // $0 – $50k → 20%
+  { minGross: 50001,  rate: 25 },  // $50,001 – $100k → 25%
+  { minGross: 100001, rate: 30 },  // $100,001 – $200k → 30%
+  { minGross: 200001, rate: 35 },  // $200,001 – $300k → 35%
+  { minGross: 300001, rate: 40 }   // $300,001+ → 40% (uncapped)
+];
+
+// Bank-Affiliated Refi rate table: driven by the deal's loan amount.
+// V3 spec: <$1M → 20%, ≥$1M → 25%.
+const DEFAULT_ALLTECH_BANK_RATES = {
+  threshold: 1_000_000,
+  below: 20,
+  atOrAbove: 25
+};
+
 // Settings carry the two title-company revenue models:
-//   fileFees       → ATOZ Title flat-fee table (per transaction type)
-//   atgPercentages → ATG Title percentage table (per transaction type, 0-100)
-// Both are user-editable in Data & Backup. Changes are NON-RETROACTIVE —
-// every existing deal carries its own locked-in snapshot of the rate that
-// was active when it was created (see saveDeal).
+//   atozRate         → ATOZ Title fixed % applied to gross before fee (V3)
+//   fileFees         → ATOZ Title per-txType flat fee subtracted after %
+//   alltechTiers     → Alltech Self-Gen tiered rate table
+//   alltechBankRates → Alltech Bank-Affiliated Refi rate table
+//
+// V3 dropped `atgPercentages` (the V2 flat percentage model). Existing
+// settings blobs with that key are ignored on load.
+//
+// Every setting is user-editable in Data & Backup. Changes are
+// NON-RETROACTIVE (Q10=A) — existing deals carry locked-in snapshots.
 const Settings = {
   _cache: null,
   load() {
@@ -57,13 +88,24 @@ const Settings = {
       const raw = localStorage.getItem(SETTINGS_KEY);
       const parsed = raw ? JSON.parse(raw) : {};
       this._cache = {
+        atozRate: (parsed.atozRate != null ? Number(parsed.atozRate) : DEFAULT_ATOZ_RATE),
         fileFees: { ...DEFAULT_FILE_FEES, ...(parsed.fileFees || {}) },
-        atgPercentages: { ...DEFAULT_ATG_PERCENTAGES, ...(parsed.atgPercentages || {}) }
+        alltechTiers: Array.isArray(parsed.alltechTiers) && parsed.alltechTiers.length
+          ? parsed.alltechTiers.map(t => ({ minGross: Number(t.minGross || 0), rate: Number(t.rate || 0) }))
+              .sort((a, b) => a.minGross - b.minGross)
+          : DEFAULT_ALLTECH_TIERS.map(t => ({ ...t })),
+        alltechBankRates: {
+          threshold: Number(parsed.alltechBankRates?.threshold ?? DEFAULT_ALLTECH_BANK_RATES.threshold),
+          below:     Number(parsed.alltechBankRates?.below     ?? DEFAULT_ALLTECH_BANK_RATES.below),
+          atOrAbove: Number(parsed.alltechBankRates?.atOrAbove ?? DEFAULT_ALLTECH_BANK_RATES.atOrAbove)
+        }
       };
     } catch {
       this._cache = {
+        atozRate: DEFAULT_ATOZ_RATE,
         fileFees: { ...DEFAULT_FILE_FEES },
-        atgPercentages: { ...DEFAULT_ATG_PERCENTAGES }
+        alltechTiers: DEFAULT_ALLTECH_TIERS.map(t => ({ ...t })),
+        alltechBankRates: { ...DEFAULT_ALLTECH_BANK_RATES }
       };
     }
     return this._cache;
@@ -74,7 +116,12 @@ const Settings = {
       ...cur,
       ...patch,
       fileFees: { ...cur.fileFees, ...(patch.fileFees || {}) },
-      atgPercentages: { ...cur.atgPercentages, ...(patch.atgPercentages || {}) }
+      alltechTiers: Array.isArray(patch.alltechTiers)
+        ? patch.alltechTiers.map(t => ({ minGross: Number(t.minGross || 0), rate: Number(t.rate || 0) }))
+            .sort((a, b) => a.minGross - b.minGross)
+        : cur.alltechTiers,
+      alltechBankRates: patch.alltechBankRates ? { ...cur.alltechBankRates, ...patch.alltechBankRates } : cur.alltechBankRates,
+      atozRate: patch.atozRate != null ? Number(patch.atozRate) : cur.atozRate
     };
     this._cache = next;
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(next));
@@ -82,10 +129,13 @@ const Settings = {
     return next;
   },
   resetFileFees() {
-    return this.save({ fileFees: { ...DEFAULT_FILE_FEES } });
+    return this.save({ fileFees: { ...DEFAULT_FILE_FEES }, atozRate: DEFAULT_ATOZ_RATE });
   },
-  resetAtgPercentages() {
-    return this.save({ atgPercentages: { ...DEFAULT_ATG_PERCENTAGES } });
+  resetAlltechTiers() {
+    return this.save({ alltechTiers: DEFAULT_ALLTECH_TIERS.map(t => ({ ...t })) });
+  },
+  resetAlltechBankRates() {
+    return this.save({ alltechBankRates: { ...DEFAULT_ALLTECH_BANK_RATES } });
   }
 };
 
@@ -94,49 +144,115 @@ function computeFileFee(transactionType) {
   return fees[transactionType] ?? 0;
 }
 
-function computeAtgPercentage(transactionType) {
-  const pcts = Settings.load().atgPercentages;
-  return pcts[transactionType] ?? 0;
+// Gross helper — sum of the three fee/premium inputs. Everything downstream
+// (all three commission models, tier lookups) starts from this number.
+function computeGross(deal) {
+  return Number(deal.settlementFee || 0) + Number(deal.lendersPolicy || 0) + Number(deal.ownersPolicy || 0);
 }
 
-// Which revenue model applies to this deal? Driven entirely by the title
-// company tag.  ATOZ → flat file fee subtracted from gross.  ATG → a
-// percentage of gross retained.  Anything else (Unassigned, legacy) →
-// fall back to the file-fee model so old deals don't go to zero.
-function revenueModelFor(titleCompany) {
-  if (titleCompany === 'ATG Title') return 'percentage';
-  return 'fileFee';   // ATOZ Title, Unassigned, or any legacy value
-}
-
-// Revenue uses the deal's STORED snapshot when present (fileFee for the
-// fee model, commissionPct for the percentage model). Settings changes are
-// non-retroactive: existing deals keep the rate that was active when they
-// were created. Only fall back to current Settings when no snapshot
-// exists (preview for a brand-new deal, or legacy data).
-function computeRevenue(deal) {
-  const sf = Number(deal.settlementFee || 0);
-  const lp = Number(deal.lendersPolicy || 0);
-  const op = Number(deal.ownersPolicy || 0);
-  const gross = sf + lp + op;
-  const model = revenueModelFor(deal.titleCompany);
-
-  if (model === 'percentage') {
-    const hasStoredPct = deal.commissionPct !== undefined && deal.commissionPct !== null && deal.commissionPct !== '';
-    const pct = hasStoredPct ? Number(deal.commissionPct) : computeAtgPercentage(deal.transactionType);
-    return round2(gross * (pct / 100));
+// Given a monthly Self-Gen gross total, return the tier that applies.
+// Tiers are the ordered ascending list from Settings; the effective tier
+// is the highest one whose minGross ≤ total.
+function computeAlltechTier(monthlyGross) {
+  const tiers = Settings.load().alltechTiers;
+  let effective = tiers[0];
+  for (const t of tiers) {
+    if (monthlyGross >= Number(t.minGross)) effective = t;
+    else break;
   }
+  return effective;   // { minGross, rate }
+}
 
-  // fileFee model
-  const hasStoredFee = deal.fileFee !== undefined && deal.fileFee !== null && deal.fileFee !== '';
-  const ff = hasStoredFee ? Number(deal.fileFee) : computeFileFee(deal.transactionType);
-  return round2(gross - ff);
+// Bank-Affiliated Refi rate driven purely by the deal's loan amount.
+function computeAlltechBankRate(loanAmount) {
+  const cfg = Settings.load().alltechBankRates;
+  return Number(loanAmount || 0) >= Number(cfg.threshold) ? Number(cfg.atOrAbove) : Number(cfg.below);
+}
+
+// Which revenue model applies. V3:
+//   'atoz'   → (gross × atozRate%) − fileFee[txType]
+//   'alltech-tier' → gross × monthly-tier rate           (Alltech, Self-Gen)
+//   'alltech-bank' → gross × bank-rate(loanAmount)       (Alltech, Bank-Aff Refi)
+//   'legacy' → gross − fileFee (fallback for any tagless legacy deal)
+function revenueModelFor(deal) {
+  if (deal.titleCompany === 'Alltech National Title') {
+    return deal.alltechSourceType === 'Bank-Affiliated Refi' ? 'alltech-bank' : 'alltech-tier';
+  }
+  if (deal.titleCompany === 'ATOZ Title') return 'atoz';
+  return 'legacy';
+}
+
+// Compute revenue from stored snapshots when present. Settings changes
+// are non-retroactive (Q10=A): existing deals keep their snapshot rates.
+// Falls back to current Settings only for previews / brand-new deals.
+//
+// For 'alltech-tier' the rate lives in `deal.commissionPct` — the cascade
+// (see cascadeAlltechMonth in Store) is what recomputes each month's
+// deals together when any Self-Gen deal is added/edited/deleted.
+function computeRevenue(deal) {
+  const gross = computeGross(deal);
+  const model = revenueModelFor(deal);
+  const hasPct = deal.commissionPct !== undefined && deal.commissionPct !== null && deal.commissionPct !== '';
+  const hasFee = deal.fileFee       !== undefined && deal.fileFee       !== null && deal.fileFee       !== '';
+
+  if (model === 'atoz') {
+    const rate = hasPct ? Number(deal.commissionPct) : Settings.load().atozRate;
+    const fee  = hasFee ? Number(deal.fileFee)       : computeFileFee(deal.transactionType);
+    return round2(gross * (rate / 100) - fee);
+  }
+  if (model === 'alltech-tier') {
+    // Prefer the deal's stored rate (locked in by the cascade). If missing,
+    // fall back to the tier-0 rate as a conservative preview.
+    const rate = hasPct ? Number(deal.commissionPct) : Settings.load().alltechTiers[0].rate;
+    return round2(gross * (rate / 100));
+  }
+  if (model === 'alltech-bank') {
+    const rate = hasPct ? Number(deal.commissionPct) : computeAlltechBankRate(deal.loanAmount);
+    return round2(gross * (rate / 100));
+  }
+  // legacy fallback — Unassigned or pre-V2 deals
+  const fee = hasFee ? Number(deal.fileFee) : computeFileFee(deal.transactionType);
+  return round2(gross - fee);
+}
+
+// Parse a US state abbreviation from a property-address string. Looks
+// for a two-letter code near the end (with or without ZIP suffix).
+// Returns '' when nothing matches. Deliberately conservative — no
+// heuristic full-name matching, so we don't false-positive on
+// "Washington DC" or town names that overlap with codes.
+const US_STATE_CODES = new Set([
+  'AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN',
+  'IA','KS','KY','LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV',
+  'NH','NJ','NM','NY','NC','ND','OH','OK','OR','PA','RI','SC','SD','TN',
+  'TX','UT','VT','VA','WA','WV','WI','WY','DC'
+]);
+function parseStateFromAddress(address) {
+  if (!address) return '';
+  const s = String(address).toUpperCase();
+  // Match ", XX 12345" or ", XX" at the tail, with optional trailing punctuation
+  const m = s.match(/[,\s]([A-Z]{2})(?:\s+\d{5}(?:-\d{4})?)?\s*$/);
+  if (m && US_STATE_CODES.has(m[1])) return m[1];
+  // Fallback — scan for any whole-word two-letter code anywhere in the string
+  const words = s.split(/[^A-Z]+/);
+  for (const w of words) {
+    if (w.length === 2 && US_STATE_CODES.has(w)) return w;
+  }
+  return '';
 }
 
 function computeClientSource(deal) {
   const listing = (deal.listingAgent || '').trim();
   const selling = (deal.sellingAgent || '').trim();
-  const client  = (deal.client || '').trim();
-  // If the same agent played both roles, or if both sides exist and we credit one of them,
+  const lender  = (deal.lenderName   || '').trim();
+  const officer = (deal.loanOfficer  || '').trim();
+  const client  = (deal.client       || '').trim();
+
+  // V3: prefer Lender / Loan Officer attribution when client matches — the
+  // user picked either chip in the modal.
+  if (client && officer && client === officer) return 'Loan Officer';
+  if (client && lender  && client === lender)  return 'Lender';
+
+  // If the same realtor played both roles, or if both sides exist and we credit one of them,
   // mark as 'Both' so the realtor database reflects the dual role.
   if (listing && selling && listing.toLowerCase() === selling.toLowerCase()) return 'Both';
   if (client && listing && selling && (client === listing || client === selling)) return client === listing ? 'Listing Agent' : 'Selling Agent';
@@ -147,11 +263,42 @@ function computeClientSource(deal) {
 
 function round2(n) { return Math.round(n * 100) / 100; }
 
+// V3: canonical YYYY-MM bucket for a date string. Returns '' for missing
+// or unparseable dates so callers can skip the cascade without a check.
+//
+// For date-only strings ('YYYY-MM-DD') we extract the month directly
+// rather than round-tripping through new Date() — the Date constructor
+// treats 'YYYY-MM-DD' as UTC midnight, which shifts to the prior day in
+// timezones west of UTC and slid August 1 deals into July on the west
+// coast. Direct string parse is timezone-safe and matches what the user
+// typed in the date picker.
+function monthKeyOf(dateStr) {
+  if (!dateStr) return '';
+  const m = String(dateStr).match(/^(\d{4})-(\d{2})/);
+  if (m) return m[1] + '-' + m[2];
+  const dt = new Date(dateStr);
+  if (isNaN(dt)) return '';
+  return dt.getFullYear() + '-' + String(dt.getMonth() + 1).padStart(2, '0');
+}
+
+// V3: monotonically-unique id generator. Previous 'd' + Date.now() collided
+// when saves happened in the same millisecond (CSV import loops especially).
+// A per-load counter breaks the tie without changing id shape enough to
+// upset anything else in the codebase — still a short kebab-safe string.
+let _idCounter = 0;
+function makeId(prefix) {
+  _idCounter = (_idCounter + 1) & 0xffffff;
+  return prefix + Date.now().toString(36) + _idCounter.toString(36).padStart(2, '0');
+}
+
 /* -------------------------- Store --------------------------- */
 
 // Ensure every state shape has the required arrays + sidecar metadata
 // dictionaries. Called from every hydrate path so old state blobs (which
 // predate lenders / entity metadata) get the new keys filled in.
+//
+// V3 additions: loanOfficerMeta sidecar dict + one-time ATG→Alltech
+// rename migration on the deals array.
 function ensureStateShape(state) {
   if (!state || typeof state !== 'object') state = {};
   if (!Array.isArray(state.deals)) state.deals = [];
@@ -159,11 +306,21 @@ function ensureStateShape(state) {
   if (!state.realtorMeta || typeof state.realtorMeta !== 'object') state.realtorMeta = {};
   if (!state.lenderMeta || typeof state.lenderMeta !== 'object') state.lenderMeta = {};
   if (!state.underwriterMeta || typeof state.underwriterMeta !== 'object') state.underwriterMeta = {};
+  if (!state.loanOfficerMeta || typeof state.loanOfficerMeta !== 'object') state.loanOfficerMeta = {};
+
+  // V3 migration: 'ATG Title' → 'Alltech National Title' (Q5=A). Runs on
+  // every hydrate; a no-op once every deal is on the new value. Preserves
+  // each deal's locked-in commissionPct/revenue snapshot per Q10=A —
+  // ONLY the label changes, not the revenue math on old data.
+  for (const d of state.deals) {
+    if (d && d.titleCompany === 'ATG Title') d.titleCompany = 'Alltech National Title';
+  }
+
   return state;
 }
 
 const Store = {
-  state: { deals: [], expenses: [], realtorMeta: {}, lenderMeta: {}, underwriterMeta: {} },
+  state: { deals: [], expenses: [], realtorMeta: {}, lenderMeta: {}, underwriterMeta: {}, loanOfficerMeta: {} },
   _cloudSyncTimer: null,
   _lastCloudSaveAt: null,
   _cloudReady: false,
@@ -192,11 +349,12 @@ const Store = {
               this.state = ensureStateShape(state.data);
             }
             if (state.settings) {
-              Settings._cache = {
-                fileFees: { ...DEFAULT_FILE_FEES, ...(state.settings.fileFees || {}) },
-                atgPercentages: { ...DEFAULT_ATG_PERCENTAGES, ...(state.settings.atgPercentages || {}) }
-              };
-              try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(Settings._cache)); } catch {}
+              // Reset then use Settings.save() so the V3 loader normalizes
+              // shape (adds atozRate default, drops legacy atgPercentages,
+              // sorts alltechTiers, etc.).
+              Settings._cache = null;
+              try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(state.settings)); } catch {}
+              Settings.load();
             }
             if (state.goals) {
               Goals._cache = state.goals;
@@ -316,83 +474,217 @@ const Store = {
   },
 
   saveDeal(payload) {
-    // Derive calculated fields
     const deal = { ...payload };
 
-    // Title company is a strict enum. Anything else (or blank) → unassigned.
+    // Title company enum. Migrate legacy ATG label defensively; unknown → unassigned.
+    if (deal.titleCompany === 'ATG Title') deal.titleCompany = 'Alltech National Title';
     if (!TITLE_COMPANIES.includes(deal.titleCompany)) {
       deal.titleCompany = TITLE_COMPANY_UNASSIGNED;
     }
 
-    // Revenue snapshot: lock in EITHER the file fee (ATOZ model) OR the
-    // commission percentage (ATG model) at deal-creation time. Settings
-    // changes don't retroactively rewrite either. On edit, preserve the
-    // existing snapshot UNLESS the transaction type or title company
-    // changed — in which case the old snapshot belonged to a different
-    // (txType, company) pair and we re-derive from current settings.
+    // V3: Alltech source type. Only meaningful for Alltech deals; forced
+    // to null for other title companies so it doesn't leak into UI later.
+    if (deal.titleCompany === 'Alltech National Title') {
+      if (!ALLTECH_SOURCE_TYPES.includes(deal.alltechSourceType)) {
+        deal.alltechSourceType = ALLTECH_SOURCE_DEFAULT;
+      }
+      // Bank-Affiliated Refi only makes sense on Refinance (Q11). If a
+      // user reclassifies a Refi→Purchase Alltech deal, drop the flag.
+      if (deal.alltechSourceType === 'Bank-Affiliated Refi' && deal.transactionType !== 'Refinance') {
+        deal.alltechSourceType = 'Self-Generated';
+      }
+    } else {
+      deal.alltechSourceType = null;
+    }
+
+    // Normalize new field shapes.
+    deal.lenderName    = (deal.lenderName    || '').trim();
+    deal.loanOfficer   = (deal.loanOfficer   || '').trim();
+    deal.state         = (deal.state         || '').trim().toUpperCase();
+    deal.loanAmount    = Number(deal.loanAmount    || 0);
+    deal.purchasePrice = Number(deal.purchasePrice || 0);
+
+    // V3: auto-parse state from propertyAddress when blank. Cheap and
+    // conservative — see parseStateFromAddress. User can override in modal.
+    if (!deal.state && deal.propertyAddress) {
+      deal.state = parseStateFromAddress(deal.propertyAddress);
+    }
+
+    // Revenue snapshot — V3 policy (Q10=A, non-retroactive across deploys):
+    //   - Existing deal + same (txType, titleCompany, alltechSourceType)
+    //     triple → preserve the locked-in snapshot.
+    //   - Otherwise → re-derive from current Settings.
+    //
+    // Alltech Self-Gen further participates in the monthly cascade after
+    // save (see cascadeAlltechMonth) — the tier applied here is a starting
+    // point; the cascade may bump it.
     const existing = deal.id ? this.state.deals.find(d => d.id === deal.id) : null;
     const sameKey = existing &&
-      existing.transactionType === deal.transactionType &&
-      existing.titleCompany === deal.titleCompany;
-    const model = revenueModelFor(deal.titleCompany);
+      existing.transactionType    === deal.transactionType &&
+      existing.titleCompany       === deal.titleCompany &&
+      existing.alltechSourceType  === deal.alltechSourceType;
+    const model = revenueModelFor(deal);
+    const settings = Settings.load();
 
-    if (model === 'percentage') {
-      const hasStoredPct = existing && existing.commissionPct !== undefined && existing.commissionPct !== null && existing.commissionPct !== '';
-      deal.commissionPct = (sameKey && hasStoredPct)
-        ? Number(existing.commissionPct)
-        : computeAtgPercentage(deal.transactionType);
-      deal.fileFee = 0;     // not used in percentage model; null it out for clarity
+    if (model === 'atoz') {
+      const hasFee = existing && existing.fileFee != null && existing.fileFee !== '';
+      const hasPct = existing && existing.commissionPct != null && existing.commissionPct !== '';
+      deal.commissionPct = (sameKey && hasPct) ? Number(existing.commissionPct) : settings.atozRate;
+      deal.fileFee       = (sameKey && hasFee) ? Number(existing.fileFee)       : computeFileFee(deal.transactionType);
+    } else if (model === 'alltech-tier') {
+      // Cascade sets the accurate rate; here we just seed with tier-0 for
+      // new deals and preserve for edits within the same key.
+      const hasPct = existing && existing.commissionPct != null && existing.commissionPct !== '';
+      deal.commissionPct = (sameKey && hasPct) ? Number(existing.commissionPct) : settings.alltechTiers[0].rate;
+      deal.fileFee = 0;
+    } else if (model === 'alltech-bank') {
+      const hasPct = existing && existing.commissionPct != null && existing.commissionPct !== '';
+      deal.commissionPct = (sameKey && hasPct) ? Number(existing.commissionPct) : computeAlltechBankRate(deal.loanAmount);
+      deal.fileFee = 0;
     } else {
-      const hasStoredFee = existing && existing.fileFee !== undefined && existing.fileFee !== null && existing.fileFee !== '';
-      deal.fileFee = (sameKey && hasStoredFee)
-        ? Number(existing.fileFee)
-        : computeFileFee(deal.transactionType);
-      deal.commissionPct = null;   // not used in file-fee model
+      // legacy / unassigned
+      const hasFee = existing && existing.fileFee != null && existing.fileFee !== '';
+      deal.fileFee       = (sameKey && hasFee) ? Number(existing.fileFee) : computeFileFee(deal.transactionType);
+      deal.commissionPct = null;
     }
     deal.revenue = computeRevenue(deal);
     deal.clientAttribution = deal.clientAttribution || computeClientSource(deal);
-    // New fields — normalize so the rest of the app can rely on shape.
-    deal.lenderName = (deal.lenderName || '').trim();
-    deal.loanOfficer = (deal.loanOfficer || '').trim();
-    deal.loanAmount = Number(deal.loanAmount || 0);
-    deal.purchasePrice = Number(deal.purchasePrice || 0);
 
     if (deal.id) {
       const i = this.state.deals.findIndex(d => d.id === deal.id);
       if (i >= 0) this.state.deals[i] = deal;
     } else {
-      deal.id = 'd' + Date.now();
+      deal.id = makeId('d');
       this.state.deals.push(deal);
     }
+
+    // V3: Alltech Self-Gen monthly cascade. If this save affected an
+    // Alltech Self-Gen deal — or moved a deal INTO or OUT of an
+    // Alltech Self-Gen bucket — re-derive every affected month's tier.
+    // Runs BEFORE _save() so the cascaded rewrites are flushed together
+    // in a single localStorage/cloud write.
+    const monthsToRecompute = new Set();
+    if (deal.titleCompany === 'Alltech National Title' && deal.alltechSourceType === 'Self-Generated') {
+      const m = monthKeyOf(deal.disbursementDate);
+      if (m) monthsToRecompute.add(m);
+    }
+    if (existing && existing.titleCompany === 'Alltech National Title' && existing.alltechSourceType === 'Self-Generated') {
+      const m = monthKeyOf(existing.disbursementDate);
+      if (m) monthsToRecompute.add(m);
+    }
+    for (const m of monthsToRecompute) this._cascadeAlltechMonth(m);
+
     this._save();
     return deal;
   },
 
+  // V3: Recompute every Alltech Self-Gen deal in a given YYYY-MM bucket.
+  // Sums their gross, picks the tier that applies, and stamps that rate +
+  // fresh revenue onto every deal in the bucket. Does NOT re-persist —
+  // caller handles the _save() (batched with the triggering write).
+  _cascadeAlltechMonth(ym) {
+    const inMonth = this.state.deals.filter(d =>
+      d.titleCompany === 'Alltech National Title' &&
+      d.alltechSourceType === 'Self-Generated' &&
+      monthKeyOf(d.disbursementDate) === ym
+    );
+    const totalGross = inMonth.reduce((s, d) => s + computeGross(d), 0);
+    const tier = computeAlltechTier(totalGross);
+    for (const d of inMonth) {
+      d.commissionPct = Number(tier.rate);
+      d.revenue = round2(computeGross(d) * (tier.rate / 100));
+    }
+  },
+
   // Bulk-assign a title company to a set of deals. Used by the deals-page
-  // bulk-tag action.
+  // bulk-tag action. Also triggers the Alltech monthly cascade for any
+  // touched month whose deals now belong to Alltech Self-Gen.
   tagDealsTitleCompany(ids, titleCompany) {
     if (!TITLE_COMPANIES.includes(titleCompany)) return 0;
     const set = new Set(ids);
+    const monthsToRecompute = new Set();
     let n = 0;
     for (const d of this.state.deals) {
-      if (set.has(d.id)) {
-        d.titleCompany = titleCompany;
-        n++;
+      if (!set.has(d.id)) continue;
+      // Cascade both the old and new bucket if they differ.
+      const wasAlltechSelfGen = d.titleCompany === 'Alltech National Title' && d.alltechSourceType === 'Self-Generated';
+      d.titleCompany = titleCompany;
+      // Newly Alltech → default source type.
+      if (titleCompany === 'Alltech National Title' && !ALLTECH_SOURCE_TYPES.includes(d.alltechSourceType)) {
+        d.alltechSourceType = ALLTECH_SOURCE_DEFAULT;
       }
+      if (titleCompany !== 'Alltech National Title') d.alltechSourceType = null;
+      const nowAlltechSelfGen = d.titleCompany === 'Alltech National Title' && d.alltechSourceType === 'Self-Generated';
+      if (wasAlltechSelfGen || nowAlltechSelfGen) {
+        const m = monthKeyOf(d.disbursementDate);
+        if (m) monthsToRecompute.add(m);
+      }
+      n++;
+    }
+    for (const m of monthsToRecompute) this._cascadeAlltechMonth(m);
+    if (n) this._save();
+    return n;
+  },
+
+  // V3: Bulk-set alltechSourceType on selected deals. Skips non-Alltech
+  // deals silently. Cascades the affected months.
+  tagAlltechSourceType(ids, sourceType) {
+    if (!ALLTECH_SOURCE_TYPES.includes(sourceType)) return 0;
+    const set = new Set(ids);
+    const monthsToRecompute = new Set();
+    let n = 0;
+    for (const d of this.state.deals) {
+      if (!set.has(d.id)) continue;
+      if (d.titleCompany !== 'Alltech National Title') continue;
+      // Bank-Aff only valid on Refi (Q11).
+      if (sourceType === 'Bank-Affiliated Refi' && d.transactionType !== 'Refinance') continue;
+      const m = monthKeyOf(d.disbursementDate);
+      if (m) monthsToRecompute.add(m);
+      d.alltechSourceType = sourceType;
+      n++;
+    }
+    for (const m of monthsToRecompute) this._cascadeAlltechMonth(m);
+    if (n) this._save();
+    return n;
+  },
+
+  // V3: One-shot state backfill (Q12=opt-in). Runs the address parser
+  // across every deal that has a propertyAddress but no state. Returns
+  // the count of deals updated.
+  backfillStates() {
+    let n = 0;
+    for (const d of this.state.deals) {
+      if (d.state && d.state.trim()) continue;
+      const parsed = parseStateFromAddress(d.propertyAddress);
+      if (parsed) { d.state = parsed; n++; }
     }
     if (n) this._save();
     return n;
   },
 
   deleteDeal(id) {
+    const target = this.state.deals.find(d => d.id === id);
     this.state.deals = this.state.deals.filter(d => d.id !== id);
+    // V3: cascade the affected month if we removed an Alltech Self-Gen deal.
+    if (target && target.titleCompany === 'Alltech National Title' && target.alltechSourceType === 'Self-Generated') {
+      const m = monthKeyOf(target.disbursementDate);
+      if (m) this._cascadeAlltechMonth(m);
+    }
     this._save();
   },
 
   deleteDeals(ids) {
     const set = new Set(ids);
+    const monthsToRecompute = new Set();
+    for (const d of this.state.deals) {
+      if (set.has(d.id) && d.titleCompany === 'Alltech National Title' && d.alltechSourceType === 'Self-Generated') {
+        const m = monthKeyOf(d.disbursementDate);
+        if (m) monthsToRecompute.add(m);
+      }
+    }
     const before = this.state.deals.length;
     this.state.deals = this.state.deals.filter(d => !set.has(d.id));
+    for (const m of monthsToRecompute) this._cascadeAlltechMonth(m);
     this._save();
     return before - this.state.deals.length;
   },
@@ -431,17 +723,19 @@ const Store = {
   saveExpense(payload) {
     const expense = { ...payload };
     expense.amount = Number(expense.amount || 0);
-    // `client` (a realtor) and `lenderName` (a lender) are independent
-    // optional targets — an expense can be tagged to either or both. The
-    // realtor-detail view sums by client; the lender-detail view sums by
-    // lenderName.
-    expense.client = (expense.client || '').trim();
-    expense.lenderName = (expense.lenderName || '').trim();
+    // V3: expenses can now target THREE optional entities independently —
+    //   client       → a realtor (realtor detail view sums by this)
+    //   lenderName   → a lender  (lender detail view sums by this)
+    //   loanOfficer  → a loan officer (LO detail view sums by this)
+    // Any combination is valid; the modal requires at least one to be set.
+    expense.client      = (expense.client      || '').trim();
+    expense.lenderName  = (expense.lenderName  || '').trim();
+    expense.loanOfficer = (expense.loanOfficer || '').trim();
     if (expense.id) {
       const i = this.state.expenses.findIndex(e => e.id === expense.id);
       if (i >= 0) this.state.expenses[i] = expense;
     } else {
-      expense.id = 'e' + Date.now();
+      expense.id = makeId('e');
       this.state.expenses.push(expense);
     }
     this._save();
@@ -1076,6 +1370,160 @@ const Store = {
     return this.state.lenderMeta[name];
   },
 
+  getLoanOfficerMeta(name) { return (this.state.loanOfficerMeta || {})[name] || {}; },
+  setLoanOfficerMeta(name, patch) {
+    const cur = this.getLoanOfficerMeta(name);
+    this.state.loanOfficerMeta[name] = { ...cur, ...patch };
+    this._save();
+    return this.state.loanOfficerMeta[name];
+  },
+
+  // V3: Loan Officers — first-class entity parallel to Lenders (Q8=B).
+  // Aggregates deal count / revenue / loan volume / expenses tagged
+  // through the `loanOfficer` field on expenses. Also surfaces meta
+  // (contact fields, notes, budget target, lead source, referred by).
+  getLoanOfficers() {
+    return this._buildLoanOfficers(this.state.deals, this.state.expenses);
+  },
+  getLoanOfficersForYear(year) {
+    if (year == null) return this.getLoanOfficers();
+    const yearDeals = this.state.deals.filter(d => {
+      if (!d.disbursementDate) return false;
+      const dt = new Date(d.disbursementDate);
+      return !isNaN(dt) && dt.getFullYear() === Number(year);
+    });
+    const yearExpenses = this.state.expenses.filter(e => {
+      if (!e.date) return false;
+      const dt = new Date(e.date);
+      return !isNaN(dt) && dt.getFullYear() === Number(year);
+    });
+    return this._buildLoanOfficers(yearDeals, yearExpenses);
+  },
+  _buildLoanOfficers(deals, expenses) {
+    const byName = new Map();
+    const ensure = (name) => {
+      if (!name || !name.trim()) return null;
+      const key = name.trim();
+      if (!byName.has(key)) {
+        byName.set(key, {
+          name: key,
+          dealCount: 0,
+          loanAmount: 0,
+          purchaseVolume: 0,
+          revenue: 0,
+          expenses: 0,
+          purchase: 0,
+          refinance: 0,
+          subordinate: 0,
+          commercial: 0,
+          firstDeal: null,
+          lastDeal: null
+        });
+      }
+      return byName.get(key);
+    };
+
+    for (const d of deals) {
+      const lo = ensure(d.loanOfficer);
+      if (!lo) continue;
+      lo.dealCount += 1;
+      lo.loanAmount     += Number(d.loanAmount     || 0);
+      lo.purchaseVolume += Number(d.purchasePrice  || 0);
+      lo.revenue        += Number(d.revenue        || 0);
+      if (d.transactionType === 'Purchase')            lo.purchase    += 1;
+      else if (d.transactionType === 'Refinance')      lo.refinance   += 1;
+      else if (d.transactionType === 'Subordinate Order') lo.subordinate += 1;
+      else if (d.transactionType === 'Commercial')     lo.commercial  += 1;
+      if (d.disbursementDate) {
+        const t = d.disbursementDate;
+        if (!lo.firstDeal || t < lo.firstDeal) lo.firstDeal = t;
+        if (!lo.lastDeal  || t > lo.lastDeal)  lo.lastDeal  = t;
+      }
+    }
+
+    for (const e of expenses) {
+      const lo = ensure(e.loanOfficer);
+      if (!lo) continue;
+      lo.expenses += Number(e.amount || 0);
+    }
+
+    // Also seed LOs known only from metadata (contact card set up but no
+    // deals yet) so they don't vanish from the database.
+    for (const name of Object.keys(this.state.loanOfficerMeta || {})) ensure(name);
+
+    const out = [];
+    for (const lo of byName.values()) {
+      lo.loanAmount     = round2(lo.loanAmount);
+      lo.purchaseVolume = round2(lo.purchaseVolume);
+      lo.revenue        = round2(lo.revenue);
+      lo.expenses       = round2(lo.expenses);
+      lo.avgLoan        = lo.dealCount > 0 ? round2(lo.loanAmount / lo.dealCount) : 0;
+      lo.avgPurchase    = lo.dealCount > 0 ? round2(lo.purchaseVolume / lo.dealCount) : 0;
+      lo.avgRevenue     = lo.dealCount > 0 ? round2(lo.revenue / lo.dealCount) : 0;
+      lo.costPerDeal    = lo.dealCount > 0 ? round2(lo.expenses / lo.dealCount) : 0;
+      lo.roi            = lo.expenses > 0 ? round2(lo.revenue / lo.expenses) : (lo.revenue > 0 ? 999 : 0);
+      const meta = (this.state.loanOfficerMeta || {})[lo.name] || {};
+      lo.notes         = meta.notes || '';
+      lo.phone         = meta.phone || '';
+      lo.email         = meta.email || '';
+      lo.brokerage     = meta.brokerage || '';   // institution / bank
+      lo.stateLicenses = Array.isArray(meta.stateLicenses) ? meta.stateLicenses : [];
+      lo.leadSource    = meta.leadSource || '';
+      lo.referredBy    = meta.referredBy || '';
+      lo.budgetTarget  = meta.budgetTarget != null ? Number(meta.budgetTarget) : null;
+      lo.budgetPct     = (lo.budgetTarget && lo.budgetTarget > 0)
+        ? round2((lo.expenses / lo.budgetTarget) * 100)
+        : null;
+      lo.isActive = lo.dealCount > 0;
+      out.push(lo);
+    }
+    out.sort((a, b) => b.revenue - a.revenue);
+    return out;
+  },
+  getLoanOfficer(name) {
+    return this.getLoanOfficers().find(l => l.name === name);
+  },
+  getDealsForLoanOfficer(name) {
+    if (!name) return [];
+    const key = name.toLowerCase();
+    return this.state.deals.filter(d => (d.loanOfficer || '').toLowerCase() === key);
+  },
+  getExpensesForLoanOfficer(name) {
+    if (!name) return [];
+    const key = name.toLowerCase();
+    return this.state.expenses.filter(e => (e.loanOfficer || '').toLowerCase() === key);
+  },
+  renameLoanOfficer(oldName, newName) {
+    const o = (oldName || '').trim();
+    const n = (newName || '').trim();
+    if (!o || !n || o === n) return 0;
+    let touched = 0;
+    for (const d of this.state.deals) {
+      if (d.loanOfficer === o) { d.loanOfficer = n; touched++; }
+      // If the deal's client was credited via the LO chip, keep the credit valid.
+      if (d.client === o && d.clientAttribution === 'Loan Officer') d.client = n;
+    }
+    for (const e of this.state.expenses) {
+      if (e.loanOfficer === o) { e.loanOfficer = n; touched++; }
+    }
+    if (this.state.loanOfficerMeta[o]) {
+      this.state.loanOfficerMeta[n] = this.state.loanOfficerMeta[n] || this.state.loanOfficerMeta[o];
+      delete this.state.loanOfficerMeta[o];
+    }
+    if (touched) this._save();
+    return touched;
+  },
+
+  // V3: unique list of states across all deals — used by the dashboard's
+  // State dropdown (Q14=data-only).
+  getStatesInData() {
+    const set = new Set();
+    for (const d of this.state.deals) {
+      if (d.state && d.state.trim()) set.add(d.state.trim().toUpperCase());
+    }
+    return Array.from(set).sort();
+  },
+
   /* ---------- Duplicate detection & resolution ---------- */
 
   // Find deals that look like duplicates of an existing record.
@@ -1132,12 +1580,12 @@ const Store = {
     const merged = { ...keep };
     const mergeableFields = [
       'orderNumber', 'closingDate', 'disbursementDate', 'transactionType',
-      'propertyAddress', 'underwriter',
+      'propertyAddress', 'underwriter', 'state',
       'listingAgent', 'listingBroker', 'sellingAgent', 'sellingBroker',
       'client', 'clientAttribution',
       'settlementFee', 'lendersPolicy', 'ownersPolicy',
       'lenderName', 'loanOfficer', 'loanAmount', 'titleCompany',
-      'purchasePrice'
+      'alltechSourceType', 'purchasePrice'
     ];
     for (const f of mergeableFields) {
       const k = keep[f];
