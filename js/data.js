@@ -87,6 +87,20 @@ const Settings = {
     try {
       const raw = localStorage.getItem(SETTINGS_KEY);
       const parsed = raw ? JSON.parse(raw) : {};
+
+      // V3 one-shot fee migration: Ash's V2 settings blob has the OLD
+      // file-fee defaults ($1555.88 Purchase, $777.94 Refinance) that just
+      // pass through Settings.load's merge unchanged. V3 spec explicitly
+      // set new defaults ($1000 / $700), but a merge only fills in MISSING
+      // keys — pre-existing keys always win. Detect the exact V2 defaults
+      // and upgrade them to V3 defaults so Ash sees the new fees without
+      // hitting Reset. Only affects NEW deals (existing deals keep their
+      // locked-in snapshot per non-retroactive policy).
+      if (parsed.fileFees) {
+        if (parsed.fileFees['Purchase']  === 1555.88) parsed.fileFees['Purchase']  = 1000;
+        if (parsed.fileFees['Refinance'] === 777.94)  parsed.fileFees['Refinance'] = 700;
+      }
+
       this._cache = {
         atozRate: (parsed.atozRate != null ? Number(parsed.atozRate) : DEFAULT_ATOZ_RATE),
         fileFees: { ...DEFAULT_FILE_FEES, ...(parsed.fileFees || {}) },
@@ -100,6 +114,11 @@ const Settings = {
           atOrAbove: Number(parsed.alltechBankRates?.atOrAbove ?? DEFAULT_ALLTECH_BANK_RATES.atOrAbove)
         }
       };
+      // Persist the migrated fees so future loads (and the cloud blob)
+      // reflect them. Idempotent — a subsequent load sees $1000/$700 and
+      // skips the check.
+      try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(this._cache)); } catch {}
+      if (window.Store && typeof window.Store._scheduleCloudSync === 'function') window.Store._scheduleCloudSync();
     } catch {
       this._cache = {
         atozRate: DEFAULT_ATOZ_RATE,
