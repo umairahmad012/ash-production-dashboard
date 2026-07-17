@@ -3820,7 +3820,7 @@ function dealModalHTML(deal, prefill = {}) {
         ${Store.getLenders().map(l => `<option value="${escapeHtml(l.name)}"></option>`).join('')}
       </datalist>
       <datalist id="loanOfficerList">
-        ${[...new Set(Store.getDeals().map(x => (x.loanOfficer || '').trim()).filter(Boolean))].sort().map(n => `<option value="${escapeHtml(n)}"></option>`).join('')}
+        ${Store.getLoanOfficers().map(l => `<option value="${escapeHtml(l.name)}"></option>`).join('')}
       </datalist>
 
       <div class="modal__actions">

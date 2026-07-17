@@ -247,15 +247,23 @@ function computeClientSource(deal) {
   const officer = (deal.loanOfficer  || '').trim();
   const client  = (deal.client       || '').trim();
 
-  // V3: prefer Lender / Loan Officer attribution when client matches — the
+  // V3: all name comparisons are case-insensitive so imports and manually
+  // edited deals ("Jane Doe" vs "jane doe") still surface the right chip.
+  const cl = client.toLowerCase();
+  const li = listing.toLowerCase();
+  const se = selling.toLowerCase();
+  const ld = lender.toLowerCase();
+  const lo = officer.toLowerCase();
+
+  // Prefer Lender / Loan Officer attribution when client matches — the
   // user picked either chip in the modal.
-  if (client && officer && client === officer) return 'Loan Officer';
-  if (client && lender  && client === lender)  return 'Lender';
+  if (cl && lo && cl === lo) return 'Loan Officer';
+  if (cl && ld && cl === ld) return 'Lender';
 
   // If the same realtor played both roles, or if both sides exist and we credit one of them,
   // mark as 'Both' so the realtor database reflects the dual role.
-  if (listing && selling && listing.toLowerCase() === selling.toLowerCase()) return 'Both';
-  if (client && listing && selling && (client === listing || client === selling)) return client === listing ? 'Listing Agent' : 'Selling Agent';
+  if (li && se && li === se) return 'Both';
+  if (cl && li && se && (cl === li || cl === se)) return cl === li ? 'Listing Agent' : 'Selling Agent';
   if (listing) return 'Listing Agent';
   if (selling) return 'Selling Agent';
   return 'Direct';
@@ -308,12 +316,20 @@ function ensureStateShape(state) {
   if (!state.underwriterMeta || typeof state.underwriterMeta !== 'object') state.underwriterMeta = {};
   if (!state.loanOfficerMeta || typeof state.loanOfficerMeta !== 'object') state.loanOfficerMeta = {};
 
-  // V3 migration: 'ATG Title' → 'Alltech National Title' (Q5=A). Runs on
-  // every hydrate; a no-op once every deal is on the new value. Preserves
-  // each deal's locked-in commissionPct/revenue snapshot per Q10=A —
-  // ONLY the label changes, not the revenue math on old data.
+  // V3 migration on every hydrate; a no-op once completed. Preserves each
+  // deal's locked-in commissionPct/revenue snapshot per Q10=A.
+  //   1. 'ATG Title' → 'Alltech National Title' (Q5=A) — label only.
+  //   2. Fill in alltechSourceType on any Alltech deal missing it, so the
+  //      monthly-tier cascade (which filters by exact 'Self-Generated')
+  //      includes pre-V3 Alltech deals in the sum. Stored commissionPct
+  //      and revenue snapshots stay put until the next real cascade in
+  //      that month is triggered by a new deal / edit / delete.
   for (const d of state.deals) {
-    if (d && d.titleCompany === 'ATG Title') d.titleCompany = 'Alltech National Title';
+    if (!d) continue;
+    if (d.titleCompany === 'ATG Title') d.titleCompany = 'Alltech National Title';
+    if (d.titleCompany === 'Alltech National Title' && !ALLTECH_SOURCE_TYPES.includes(d.alltechSourceType)) {
+      d.alltechSourceType = ALLTECH_SOURCE_DEFAULT;
+    }
   }
 
   return state;
@@ -599,6 +615,32 @@ const Store = {
   // Bulk-assign a title company to a set of deals. Used by the deals-page
   // bulk-tag action. Also triggers the Alltech monthly cascade for any
   // touched month whose deals now belong to Alltech Self-Gen.
+  // V3 helper: re-derive a deal's revenue-model snapshot (commissionPct,
+  // fileFee) from CURRENT Settings and its own transactionType/loanAmount.
+  // Used by bulk retag ops when the deal's title company or source type
+  // changes — without this, the deal keeps its OLD model's snapshot values
+  // and computeRevenue returns wrong numbers on the next read.
+  // Alltech Self-Gen callers still cascade the affected month afterward —
+  // this just seeds the correct starting values.
+  _reDeriveDealSnapshot(deal) {
+    const settings = Settings.load();
+    const model = revenueModelFor(deal);
+    if (model === 'atoz') {
+      deal.commissionPct = settings.atozRate;
+      deal.fileFee = computeFileFee(deal.transactionType);
+    } else if (model === 'alltech-tier') {
+      deal.commissionPct = settings.alltechTiers[0].rate;
+      deal.fileFee = 0;
+    } else if (model === 'alltech-bank') {
+      deal.commissionPct = computeAlltechBankRate(deal.loanAmount);
+      deal.fileFee = 0;
+    } else {
+      deal.commissionPct = null;
+      deal.fileFee = computeFileFee(deal.transactionType);
+    }
+    deal.revenue = computeRevenue(deal);
+  },
+
   tagDealsTitleCompany(ids, titleCompany) {
     if (!TITLE_COMPANIES.includes(titleCompany)) return 0;
     const set = new Set(ids);
@@ -606,7 +648,7 @@ const Store = {
     let n = 0;
     for (const d of this.state.deals) {
       if (!set.has(d.id)) continue;
-      // Cascade both the old and new bucket if they differ.
+      // Cascade both the old and new bucket if either was Alltech Self-Gen.
       const wasAlltechSelfGen = d.titleCompany === 'Alltech National Title' && d.alltechSourceType === 'Self-Generated';
       d.titleCompany = titleCompany;
       // Newly Alltech → default source type.
@@ -614,6 +656,13 @@ const Store = {
         d.alltechSourceType = ALLTECH_SOURCE_DEFAULT;
       }
       if (titleCompany !== 'Alltech National Title') d.alltechSourceType = null;
+      // Re-derive the deal's own snapshot for its NEW model. Without this,
+      // an Alltech Self-Gen deal retagged as ATOZ would keep its old
+      // commissionPct=<tier rate> and fileFee=0 — computeRevenue would then
+      // apply the tier rate under the ATOZ formula (gross × tierPct − 0).
+      // For Alltech Self-Gen retags, the cascade below overwrites this seed
+      // with the correct month tier.
+      this._reDeriveDealSnapshot(d);
       const nowAlltechSelfGen = d.titleCompany === 'Alltech National Title' && d.alltechSourceType === 'Self-Generated';
       if (wasAlltechSelfGen || nowAlltechSelfGen) {
         const m = monthKeyOf(d.disbursementDate);
@@ -638,9 +687,18 @@ const Store = {
       if (d.titleCompany !== 'Alltech National Title') continue;
       // Bank-Aff only valid on Refi (Q11).
       if (sourceType === 'Bank-Affiliated Refi' && d.transactionType !== 'Refinance') continue;
-      const m = monthKeyOf(d.disbursementDate);
-      if (m) monthsToRecompute.add(m);
+      // Cascade both the OLD Self-Gen bucket (if applicable) and the NEW
+      // one, since either direction can change a month's tier.
+      const wasSelfGen = d.alltechSourceType === 'Self-Generated';
       d.alltechSourceType = sourceType;
+      // Self-Gen → Bank-Aff (or reverse) is a different model; re-derive.
+      // Cascade below will overwrite for Self-Gen deals.
+      this._reDeriveDealSnapshot(d);
+      const nowSelfGen = d.alltechSourceType === 'Self-Generated';
+      if (wasSelfGen || nowSelfGen) {
+        const m = monthKeyOf(d.disbursementDate);
+        if (m) monthsToRecompute.add(m);
+      }
       n++;
     }
     for (const m of monthsToRecompute) this._cascadeAlltechMonth(m);

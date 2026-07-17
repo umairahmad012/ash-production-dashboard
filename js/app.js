@@ -498,7 +498,10 @@ const App = {
           for (const other of Store.getDeals()) {
             if (other.id === (deal && deal.id)) continue;
             if (other.titleCompany !== 'Alltech National Title') continue;
-            if (other.alltechSourceType !== 'Self-Generated') continue;
+            // Legacy/imported Alltech deals may lack an explicit source
+            // type — mirror the ALLTECH_SOURCE_DEFAULT fallback used in
+            // saveDeal so those deals count toward the tier preview.
+            if ((other.alltechSourceType || 'Self-Generated') !== 'Self-Generated') continue;
             if (monthKeyOf(other.disbursementDate) !== ym) continue;
             monthTotal += computeGross(other);
           }
