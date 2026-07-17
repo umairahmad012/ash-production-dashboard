@@ -882,8 +882,8 @@ const Store = {
 
   // Agents aggregated from deals in a specific year only. Used for the dashboard
   // leaderboards when a year filter is active. Structure matches getAgents().
-  getAgentsForYear(year) {
-    if (year == null) return this.getAgents();
+  getAgentsForYear(year, state = null) {
+    if (year == null && !state) return this.getAgents();
     const byName = new Map();
     const ensure = (name) => {
       if (!name || !name.trim()) return null;
@@ -906,10 +906,15 @@ const Store = {
       return byName.get(key);
     };
 
+    const stateFilter = state ? String(state).toUpperCase() : null;
     const yearDeals = this.state.deals.filter(d => {
-      if (!d.disbursementDate) return false;
-      const dt = new Date(d.disbursementDate);
-      return !isNaN(dt) && dt.getFullYear() === Number(year);
+      if (year != null) {
+        if (!d.disbursementDate) return false;
+        const dt = new Date(d.disbursementDate);
+        if (isNaN(dt) || dt.getFullYear() !== Number(year)) return false;
+      }
+      if (stateFilter && (d.state || '').toUpperCase() !== stateFilter) return false;
+      return true;
     });
 
     for (const d of yearDeals) {
@@ -1232,13 +1237,14 @@ const Store = {
      so the card layout stays stable). When `year` is non-null, only deals
      disbursed in that calendar year are counted.
   ------------------------------------------------------------------ */
-  getTitleCompanyBreakdown(year = null) {
+  getTitleCompanyBreakdown(year = null, state = null) {
     const inYear = (dateStr) => {
       if (year == null) return true;
       if (!dateStr) return false;
       const dt = new Date(dateStr);
       return !isNaN(dt) && dt.getFullYear() === Number(year);
     };
+    const inState = state ? (d) => (d.state || '').toUpperCase() === String(state).toUpperCase() : () => true;
     // Pre-create both companies with zero counts so the dashboard always
     // renders both rows even before any tagging has been done.
     const totals = {};
@@ -1247,6 +1253,7 @@ const Store = {
     let unassignedRevenue = 0;
     for (const d of this.state.deals) {
       if (!inYear(d.disbursementDate)) continue;
+      if (!inState(d)) continue;
       const tc = TITLE_COMPANIES.includes(d.titleCompany) ? d.titleCompany : null;
       if (!tc) {
         unassignedCount += 1;
@@ -1626,15 +1633,18 @@ const Store = {
    *  - activeClients = distinct credited-client realtors in that year
    *  - totalAgents = all-time agent database size (for context)
    */
-  getOverview(year = null) {
+  getOverview(year = null, state = null) {
     const inYear = (dateStr) => {
       if (year == null) return true;
       if (!dateStr) return false;
       const dt = new Date(dateStr);
       return !isNaN(dt) && dt.getFullYear() === Number(year);
     };
+    // V3: state-scoping. Deals filter directly on the state field;
+    // expenses aren't state-attributed so they stay unfiltered by state.
+    const inState = state ? (d) => (d.state || '').toUpperCase() === String(state).toUpperCase() : () => true;
 
-    const deals    = this.state.deals.filter(d => inYear(d.disbursementDate));
+    const deals    = this.state.deals.filter(d => inYear(d.disbursementDate) && inState(d));
     const expenses = this.state.expenses.filter(e => inYear(e.date));
     const allAgents = this.getAgents();
 
@@ -1689,11 +1699,13 @@ const Store = {
     };
   },
 
-  // Monthly production table data
-  getMonthlyProduction(year) {
+  // Monthly production table data. V3: optional state filter.
+  getMonthlyProduction(year, state = null) {
+    const inState = state ? (d) => (d.state || '').toUpperCase() === String(state).toUpperCase() : () => true;
     const deals = this.state.deals.filter(d => {
       if (!d.disbursementDate) return false;
-      return new Date(d.disbursementDate).getFullYear() === year;
+      if (new Date(d.disbursementDate).getFullYear() !== year) return false;
+      return inState(d);
     });
 
     const rows = MONTHS_SHORT.map((m, idx) => ({

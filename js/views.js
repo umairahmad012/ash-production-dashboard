@@ -169,22 +169,24 @@ const CHART_FONT = { family: 'Montserrat', size: 11, weight: '400' };
 
 Views.dashboard = function(query = {}) {
   const years = Store.getYearsInData();
+  const statesInData = Store.getStatesInData();
   const thisYear = new Date().getFullYear();
-  // Default: current calendar year if it has data, else latest available, else current year
   const defaultYear = years.includes(thisYear) ? thisYear : (years[years.length - 1] || thisYear);
 
-  // 'all' = no filter; otherwise a numeric year string
   const rawScope = query.year || String(defaultYear);
   const scopeYear = rawScope === 'all' ? null : Number(rawScope);
+  const scopeState = query.state || '';   // '' = All states
   const scopeLabel = scopeYear == null ? 'All Time' : String(scopeYear);
+  const scopeLabelFull = scopeLabel + (scopeState ? ` · ${scopeState}` : '');
 
-  const o = Store.getOverview(scopeYear);
-  const agents = scopeYear == null ? Store.getAgents() : Store.getAgentsForYear(scopeYear);
+  const o = Store.getOverview(scopeYear, scopeState || null);
+  const agents = (scopeYear == null && !scopeState)
+    ? Store.getAgents()
+    : Store.getAgentsForYear(scopeYear, scopeState || null);
   const topByRevenue = agents.filter(a => a.revenue > 0).sort((a, b) => b.revenue - a.revenue).slice(0, 8);
   const topByDeals = agents.filter(a => a.dealCount > 0).sort((a, b) => b.dealCount - a.dealCount).slice(0, 8);
 
-  // Title-company routing breakdown — respects the year filter (Q15).
-  const tcBreakdown = Store.getTitleCompanyBreakdown(scopeYear);
+  const tcBreakdown = Store.getTitleCompanyBreakdown(scopeYear, scopeState || null);
   const tcMaxRev = Math.max(1, ...tcBreakdown.rows.map(r => r.revenue));
   const tcTotalRev = tcBreakdown.rows.reduce((s, r) => s + r.revenue, 0);
   const tcTotalDeals = tcBreakdown.rows.reduce((s, r) => s + r.dealCount, 0);
@@ -195,8 +197,9 @@ Views.dashboard = function(query = {}) {
   const recentDeals = Store.getDeals()
     .filter(d => {
       if (!d.disbursementDate) return false;
-      if (scopeYear == null) return true;
-      return new Date(d.disbursementDate).getFullYear() === scopeYear;
+      if (scopeYear != null && new Date(d.disbursementDate).getFullYear() !== scopeYear) return false;
+      if (scopeState && (d.state || '').toUpperCase() !== scopeState.toUpperCase()) return false;
+      return true;
     })
     .sort((a, b) => b.disbursementDate.localeCompare(a.disbursementDate))
     .slice(0, 6);
@@ -235,8 +238,18 @@ Views.dashboard = function(query = {}) {
             <span class="master-filter__caret">▾</span>
           </div>
         </label>
+        <label class="master-filter__pickerLabel" for="dashStateSelect">
+          <span class="master-filter__eyebrow">Filter by State</span>
+          <div class="master-filter__picker">
+            <select class="master-filter__select" id="dashStateSelect">
+              <option value="" ${!scopeState ? 'selected' : ''}>All States</option>
+              ${statesInData.map(s => `<option value="${s}" ${s === scopeState ? 'selected' : ''}>${s}</option>`).join('')}
+            </select>
+            <span class="master-filter__caret">▾</span>
+          </div>
+        </label>
         <div class="master-filter__summary">
-          <span class="master-filter__summaryScope">${scopeLabel}</span>
+          <span class="master-filter__summaryScope">${scopeLabelFull}</span>
           <span class="master-filter__summaryMeta">${o.totalDeals} deal${o.totalDeals === 1 ? '' : 's'} · ${fmtMoney(o.totalRevenue, { decimals: 0 })}</span>
         </div>
       </div>
@@ -283,7 +296,7 @@ Views.dashboard = function(query = {}) {
               return `
                 <a href="#/deals?titleCo=${encodeURIComponent(r.name)}${scopeYear != null ? `&year=${scopeYear}` : ''}" class="title-co-card title-co-card--${tone}">
                   <div class="title-co-card__head">
-                    <span class="title-co-card__badge">${r.name === 'ATOZ Title' ? 'ATOZ' : 'ATG'}</span>
+                    <span class="title-co-card__badge">${r.name === 'ATOZ Title' ? 'ATOZ' : 'ALLTECH'}</span>
                     <span class="title-co-card__name">${escapeHtml(r.name)}</span>
                   </div>
                   <div class="title-co-card__metric">
@@ -420,24 +433,29 @@ Views.dashboardPost = function(query = {}) {
   const defaultYear = years.includes(thisYear) ? thisYear : (years[years.length - 1] || thisYear);
   const rawScope = query.year || String(defaultYear);
   const scopeYear = rawScope === 'all' ? null : Number(rawScope);
+  const scopeState = query.state || '';
   const chartYear = scopeYear != null ? scopeYear : (years[years.length - 1] || thisYear);
 
-  // Overview for scoped metrics (tx mix chart pulls from here)
-  const o = Store.getOverview(scopeYear);
+  const o = Store.getOverview(scopeYear, scopeState || null);
 
-  buildMonthlyChart(chartYear);
+  buildMonthlyChart(chartYear, scopeState || null);
   buildTxMixChart(o);
 
-  // Animate master filter in
   Animate.heroIn('[data-animate="hero"]');
-  // Animate title-company comparison bars
   Animate.growBars('.title-co-card__bar-fill[data-target-width]', { stagger: 0.08, baseDelay: 0.15 });
 
-  // Wire year dropdown — drive route query to re-render everything
-  document.getElementById('dashYearSelect')?.addEventListener('change', (e) => {
-    const y = e.target.value;
-    App.navigate('dashboard', y === String(defaultYear) ? {} : { year: y });
-  });
+  // Rebuild the query when either filter changes; drop year param when
+  // it matches the default so URLs stay clean.
+  const rebuildQuery = () => {
+    const y = document.getElementById('dashYearSelect')?.value || String(defaultYear);
+    const s = document.getElementById('dashStateSelect')?.value || '';
+    const q = {};
+    if (y !== String(defaultYear)) q.year = y;
+    if (s) q.state = s;
+    App.navigate('dashboard', q);
+  };
+  document.getElementById('dashYearSelect')?.addEventListener('change', rebuildQuery);
+  document.getElementById('dashStateSelect')?.addEventListener('change', rebuildQuery);
 
   document.querySelectorAll('.lb-row').forEach(row => {
     row.addEventListener('click', () => {
@@ -456,8 +474,8 @@ Views.dashboardPost = function(query = {}) {
   document.querySelector('[data-action="open-deal-modal"]')?.addEventListener('click', () => App.openDealModal());
 };
 
-function buildMonthlyChart(year) {
-  const rows = Store.getMonthlyProduction(year);
+function buildMonthlyChart(year, state = null) {
+  const rows = Store.getMonthlyProduction(year, state);
   const ctx = document.getElementById('monthlyRevenueChart');
   if (!ctx) return;
   if (CHARTS.monthlyRevenueChart) CHARTS.monthlyRevenueChart.destroy();
@@ -569,11 +587,13 @@ function dealTypeTag(t) {
 }
 
 // Title-company badge — strict color coding so the deals table is scannable:
-// ATOZ = forest (primary brand), ATG = gold (accent). Anything else (legacy
-// untagged deals) → subdued slate "Unassigned" tag.
+// ATOZ = forest (primary brand), Alltech = gold (accent). Anything else
+// (legacy untagged) → subdued slate "Unassigned" tag. Legacy 'ATG Title'
+// still gets the gold badge in case any deal escaped the hydrate migration.
 function titleCompanyTag(tc) {
-  if (tc === 'ATOZ Title') return '<span class="tag tag--forest">ATOZ</span>';
-  if (tc === 'ATG Title')  return '<span class="tag tag--gold">ATG</span>';
+  if (tc === 'ATOZ Title')             return '<span class="tag tag--forest">ATOZ</span>';
+  if (tc === 'Alltech National Title') return '<span class="tag tag--gold">ALLTECH</span>';
+  if (tc === 'ATG Title')              return '<span class="tag tag--gold">ALLTECH</span>';
   return '<span class="tag tag--subordinate">Unassigned</span>';
 }
 
@@ -613,7 +633,7 @@ Views.deals = function(query = {}) {
   const typeF = query.type || '';
   const monthF = query.month || '';
   const agentF = query.agent || '';
-  const titleCoF = query.titleCo || '';   // 'ATOZ Title' | 'ATG Title' | 'Unassigned' | ''
+  const titleCoF = query.titleCo || '';   // 'ATOZ Title' | 'Alltech National Title' | 'Unassigned' | ''
 
   let filtered = deals.filter(d => {
     if (yearF && d.disbursementDate) {
@@ -2531,8 +2551,11 @@ Views.monthlyPost = function(query = {}) {
 Views.data = function() {
   const o = Store.getOverview();
   const lastBackup = localStorage.getItem('ra_last_backup');
-  const fees = Settings.load().fileFees;
-  const atgPcts = Settings.load().atgPercentages;
+  const settings = Settings.load();
+  const fees = settings.fileFees;
+  const atozRate = settings.atozRate;
+  const alltechTiers = settings.alltechTiers;
+  const alltechBank = settings.alltechBankRates;
   const dupeGroups = Store.findDuplicateDeals();
 
   return `
@@ -2605,38 +2628,46 @@ Views.data = function() {
         </div>
       </div>
 
-      <!-- ATOZ Title — file-fee model -->
+      <!-- ATOZ Title — flat 40% rate minus file fee per transaction type (V3) -->
       <div class="panel">
         <div class="panel__head">
           <div>
-            <h3 class="panel__title">${icon('settings', 18)} ATOZ Title — File Fees</h3>
-            <div class="panel__subtitle">Flat fee subtracted from gross per transaction type</div>
+            <h3 class="panel__title">${icon('settings', 18)} ATOZ Title — Commission Rate + File Fees</h3>
+            <div class="panel__subtitle">Flat percentage of gross, then a per-transaction-type file fee subtracted</div>
           </div>
         </div>
         <div class="panel__body">
           <p style="font-size: 13px; color: var(--mid-grey); margin: 0 0 24px; max-width: 640px;">
-            For ATOZ deals: <strong>Revenue = Settlement + Lender's + Owner's − File Fee</strong>.
-            Changes apply <strong>only to new deals</strong> — existing deals keep the fee that was active when they were created.
+            For ATOZ deals: <strong>Revenue = (Settlement + Lender's + Owner's) × Rate − File Fee</strong>.
+            Changes apply <strong>only to new deals</strong> — existing deals keep the values that were active when they were created.
           </p>
-          <form id="feeForm" class="form-grid" style="max-width: 720px;">
+          <form id="atozForm" class="form-grid" style="max-width: 720px;">
+            <div class="field field--full">
+              <label class="field__label">Commission Rate</label>
+              <div class="field__money">
+                <input class="field__input" type="number" step="0.01" min="0" max="100" name="atozRate" value="${atozRate}" required />
+                <span class="field__money-prefix" style="left:auto;right:12px;">%</span>
+              </div>
+              <span class="field__hint">Applied to gross before the file fee is deducted. Default 40%.</span>
+            </div>
             <div class="field">
-              <label class="field__label">Purchase</label>
+              <label class="field__label">Purchase File Fee</label>
               <div class="field__money">
                 <span class="field__money-prefix">$</span>
                 <input class="field__input" type="number" step="0.01" min="0" name="purchase" value="${fees['Purchase']}" required />
               </div>
-              <span class="field__hint">Default $1,555.88</span>
+              <span class="field__hint">Default $1,000</span>
             </div>
             <div class="field">
-              <label class="field__label">Refinance</label>
+              <label class="field__label">Refinance File Fee</label>
               <div class="field__money">
                 <span class="field__money-prefix">$</span>
                 <input class="field__input" type="number" step="0.01" min="0" name="refinance" value="${fees['Refinance']}" required />
               </div>
-              <span class="field__hint">Default $777.94</span>
+              <span class="field__hint">Default $700</span>
             </div>
             <div class="field">
-              <label class="field__label">Subordinate Order</label>
+              <label class="field__label">Subordinate File Fee</label>
               <div class="field__money">
                 <span class="field__money-prefix">$</span>
                 <input class="field__input" type="number" step="0.01" min="0" name="subordinate" value="${fees['Subordinate Order']}" required />
@@ -2644,7 +2675,7 @@ Views.data = function() {
               <span class="field__hint">Default $0</span>
             </div>
             <div class="field">
-              <label class="field__label">Commercial</label>
+              <label class="field__label">Commercial File Fee</label>
               <div class="field__money">
                 <span class="field__money-prefix">$</span>
                 <input class="field__input" type="number" step="0.01" min="0" name="commercial" value="${fees['Commercial'] || 0}" required />
@@ -2659,51 +2690,86 @@ Views.data = function() {
         </div>
       </div>
 
-      <!-- ATG Title — percentage model -->
+      <!-- Alltech National Title — Self-Generated tiered structure (V3) -->
       <div class="panel">
         <div class="panel__head">
           <div>
-            <h3 class="panel__title">${icon('settings', 18)} ATG Title — Commission Percentages</h3>
-            <div class="panel__subtitle">Percentage of gross retained as revenue per transaction type</div>
+            <h3 class="panel__title">${icon('settings', 18)} Alltech National Title — Self-Generated Tiers</h3>
+            <div class="panel__subtitle">Rate applied to every Self-Generated Alltech deal in a month is set by that month's cumulative gross</div>
           </div>
         </div>
         <div class="panel__body">
           <p style="font-size: 13px; color: var(--mid-grey); margin: 0 0 24px; max-width: 640px;">
-            For ATG deals: <strong>Revenue = (Settlement + Lender's + Owner's) × Percentage</strong>.
-            Changes apply <strong>only to new deals</strong> — existing deals keep the percentage that was active when they were created.
+            When a new Self-Generated deal in a month pushes cumulative gross past a threshold, <strong>every</strong> Self-Gen deal in that month recomputes to the new rate. Bank-Affiliated Refi deals use the flat table below and don't count toward the tier.
           </p>
-          <form id="atgForm" class="form-grid" style="max-width: 720px;">
-            <div class="field">
-              <label class="field__label">Purchase</label>
-              <div class="field__money">
-                <input class="field__input" type="number" step="0.01" min="0" max="100" name="purchase" value="${atgPcts['Purchase'] || 0}" required />
-                <span class="field__money-prefix" style="left:auto;right:12px;">%</span>
+          <form id="alltechTiersForm" class="alltech-tiers-form" style="max-width: 720px;">
+            ${alltechTiers.map((t, i) => `
+              <div class="alltech-tier-row" data-tier-idx="${i}">
+                <div class="field">
+                  <label class="field__label">Min Gross</label>
+                  <div class="field__money">
+                    <span class="field__money-prefix">$</span>
+                    <input class="field__input" type="number" step="1" min="0" name="minGross_${i}" value="${t.minGross}" required />
+                  </div>
+                </div>
+                <div class="field">
+                  <label class="field__label">Rate</label>
+                  <div class="field__money">
+                    <input class="field__input" type="number" step="0.01" min="0" max="100" name="rate_${i}" value="${t.rate}" required />
+                    <span class="field__money-prefix" style="left:auto;right:12px;">%</span>
+                  </div>
+                </div>
+                <div class="alltech-tier-row__label">Tier ${i + 1}</div>
               </div>
+            `).join('')}
+            <div class="field field--full" style="display: flex; gap: 12px; align-items: center; margin-top: 12px;">
+              <button type="submit" class="btn btn--gold">${icon('check', 14)} Save Tiers (applies to new deals)</button>
+              <button type="button" class="btn btn--ghost" id="resetAlltechTiersBtn">Restore Defaults</button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <!-- Alltech National Title — Bank-Affiliated Refi flat rates (V3) -->
+      <div class="panel">
+        <div class="panel__head">
+          <div>
+            <h3 class="panel__title">${icon('settings', 18)} Alltech National Title — Bank-Affiliated Refi</h3>
+            <div class="panel__subtitle">Flat commission rate for Refinance deals sourced through bank-affiliated channels, driven by loan amount</div>
+          </div>
+        </div>
+        <div class="panel__body">
+          <p style="font-size: 13px; color: var(--mid-grey); margin: 0 0 24px; max-width: 640px;">
+            Applies only to Alltech Refinance deals marked <strong>Bank-Affiliated Refi</strong>. These do not count toward the Self-Generated monthly tier.
+          </p>
+          <form id="alltechBankForm" class="form-grid" style="max-width: 720px;">
+            <div class="field field--full">
+              <label class="field__label">Loan Amount Threshold</label>
+              <div class="field__money">
+                <span class="field__money-prefix">$</span>
+                <input class="field__input" type="number" step="1" min="0" name="threshold" value="${alltechBank.threshold}" required />
+              </div>
+              <span class="field__hint">Deals below use the &quot;Below&quot; rate; deals at or above use the &quot;At or Above&quot; rate. Default $1,000,000.</span>
             </div>
             <div class="field">
-              <label class="field__label">Refinance</label>
+              <label class="field__label">Rate — Below Threshold</label>
               <div class="field__money">
-                <input class="field__input" type="number" step="0.01" min="0" max="100" name="refinance" value="${atgPcts['Refinance'] || 0}" required />
+                <input class="field__input" type="number" step="0.01" min="0" max="100" name="below" value="${alltechBank.below}" required />
                 <span class="field__money-prefix" style="left:auto;right:12px;">%</span>
               </div>
+              <span class="field__hint">Default 20%</span>
             </div>
             <div class="field">
-              <label class="field__label">Subordinate Order</label>
+              <label class="field__label">Rate — At or Above</label>
               <div class="field__money">
-                <input class="field__input" type="number" step="0.01" min="0" max="100" name="subordinate" value="${atgPcts['Subordinate Order'] || 0}" required />
+                <input class="field__input" type="number" step="0.01" min="0" max="100" name="atOrAbove" value="${alltechBank.atOrAbove}" required />
                 <span class="field__money-prefix" style="left:auto;right:12px;">%</span>
               </div>
-            </div>
-            <div class="field">
-              <label class="field__label">Commercial</label>
-              <div class="field__money">
-                <input class="field__input" type="number" step="0.01" min="0" max="100" name="commercial" value="${atgPcts['Commercial'] || 0}" required />
-                <span class="field__money-prefix" style="left:auto;right:12px;">%</span>
-              </div>
+              <span class="field__hint">Default 25%</span>
             </div>
             <div class="field field--full" style="display: flex; gap: 12px; align-items: center;">
-              <button type="submit" class="btn btn--gold">${icon('check', 14)} Save ATG (applies to new deals)</button>
-              <button type="button" class="btn btn--ghost" id="resetAtgBtn">Restore Defaults (all 0%)</button>
+              <button type="submit" class="btn btn--gold">${icon('check', 14)} Save Bank-Aff Rates (applies to new deals)</button>
+              <button type="button" class="btn btn--ghost" id="resetAlltechBankBtn">Restore Defaults</button>
             </div>
           </form>
         </div>
@@ -2898,51 +2964,75 @@ Views.dataPost = function() {
     App.render();
   });
 
-  // ATOZ — file fees per transaction type
-  document.getElementById('feeForm')?.addEventListener('submit', (e) => {
+  // ATOZ — rate + file fees. Non-retroactive: only new deals use these.
+  document.getElementById('atozForm')?.addEventListener('submit', (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
     Settings.save({
+      atozRate: Number(fd.get('atozRate') || 0),
       fileFees: {
-        'Purchase': Number(fd.get('purchase') || 0),
-        'Refinance': Number(fd.get('refinance') || 0),
+        'Purchase':          Number(fd.get('purchase')    || 0),
+        'Refinance':         Number(fd.get('refinance')   || 0),
         'Subordinate Order': Number(fd.get('subordinate') || 0),
-        'Commercial': Number(fd.get('commercial') || 0)
+        'Commercial':        Number(fd.get('commercial')  || 0)
       }
     });
-    // NON-RETROACTIVE: existing deals keep their locked-in fileFee +
-    // revenue. Only deals created AFTER this point use the new fees.
-    App.toast('ATOZ file fees saved — applies to new deals only');
+    App.toast('ATOZ settings saved — applies to new deals only');
     App.render();
   });
 
   document.getElementById('resetFeesBtn')?.addEventListener('click', () => {
-    if (!confirm('Restore the original Excel defaults for all four ATOZ file fees? (Existing deals will not be changed — only future deals will use the restored defaults.)')) return;
+    if (!confirm('Restore ATOZ defaults (40% rate + file fees $1000/$700/$0/$0)? Existing deals unchanged.')) return;
     Settings.resetFileFees();
-    App.toast('ATOZ file fees restored — applies to new deals only');
+    App.toast('ATOZ settings restored — applies to new deals only');
     App.render();
   });
 
-  // ATG — commission percentages per transaction type
-  document.getElementById('atgForm')?.addEventListener('submit', (e) => {
+  // Alltech Self-Gen tiers — pull each row's minGross + rate. Save
+  // normalization in Settings.save sorts them ascending.
+  document.getElementById('alltechTiersForm')?.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const tiers = [];
+    // Scan for tier row indices present in the form.
+    const rowEls = e.target.querySelectorAll('[data-tier-idx]');
+    rowEls.forEach(row => {
+      const i = row.getAttribute('data-tier-idx');
+      tiers.push({
+        minGross: Number(fd.get('minGross_' + i) || 0),
+        rate: Number(fd.get('rate_' + i) || 0)
+      });
+    });
+    Settings.save({ alltechTiers: tiers });
+    App.toast('Alltech tiers saved — applies to new deals only');
+    App.render();
+  });
+
+  document.getElementById('resetAlltechTiersBtn')?.addEventListener('click', () => {
+    if (!confirm('Restore Alltech Self-Generated tier defaults (20/25/30/35/40%)? Existing deals unchanged.')) return;
+    Settings.resetAlltechTiers();
+    App.toast('Alltech tiers restored — applies to new deals only');
+    App.render();
+  });
+
+  document.getElementById('alltechBankForm')?.addEventListener('submit', (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
     Settings.save({
-      atgPercentages: {
-        'Purchase': Number(fd.get('purchase') || 0),
-        'Refinance': Number(fd.get('refinance') || 0),
-        'Subordinate Order': Number(fd.get('subordinate') || 0),
-        'Commercial': Number(fd.get('commercial') || 0)
+      alltechBankRates: {
+        threshold: Number(fd.get('threshold') || 0),
+        below:     Number(fd.get('below')     || 0),
+        atOrAbove: Number(fd.get('atOrAbove') || 0)
       }
     });
-    App.toast('ATG percentages saved — applies to new deals only');
+    App.toast('Alltech Bank-Aff rates saved — applies to new deals only');
     App.render();
   });
 
-  document.getElementById('resetAtgBtn')?.addEventListener('click', () => {
-    if (!confirm('Reset all ATG percentages to 0%? (Existing deals keep their locked-in rates.)')) return;
-    Settings.resetAtgPercentages();
-    App.toast('ATG percentages reset — applies to new deals only');
+  document.getElementById('resetAlltechBankBtn')?.addEventListener('click', () => {
+    if (!confirm('Restore Alltech Bank-Affiliated Refi defaults ($1M threshold / 20% / 25%)? Existing deals unchanged.')) return;
+    Settings.resetAlltechBankRates();
+    App.toast('Alltech Bank-Aff rates restored — applies to new deals only');
     App.render();
   });
 };
@@ -3213,7 +3303,12 @@ function dealModalHTML(deal, prefill = {}) {
           <input class="field__input" name="propertyAddress" value="${escapeHtml(d.propertyAddress || '')}" placeholder="123 Main St, City, ST 00000" />
         </div>
 
-        <div class="field field--full">
+        <div class="field">
+          <label class="field__label">State</label>
+          <input class="field__input" name="state" id="stateInput" value="${escapeHtml(d.state || '')}" maxlength="2" style="text-transform:uppercase;" placeholder="VA" />
+          <span class="field__hint">Auto-detected from address on save if blank</span>
+        </div>
+        <div class="field">
           <label class="field__label">Underwriter</label>
           <input class="field__input" name="underwriter" value="${escapeHtml(d.underwriter || '')}" placeholder="e.g. First American Title, Stewart Title" />
         </div>
@@ -3256,6 +3351,14 @@ function dealModalHTML(deal, prefill = {}) {
           <button type="button" class="client-chip ${attr === 'Both' ? 'is-active' : ''}" data-client-pick="both">
             <div class="client-chip__role">Both Sides</div>
             <div class="client-chip__name">One agent represented both</div>
+          </button>
+          <button type="button" class="client-chip ${attr === 'Lender' ? 'is-active' : ''}" data-client-pick="lender">
+            <div class="client-chip__role">Lender</div>
+            <div class="client-chip__name" id="chipNameLender">${escapeHtml(d.lenderName || '—')}</div>
+          </button>
+          <button type="button" class="client-chip ${attr === 'Loan Officer' ? 'is-active' : ''}" data-client-pick="loanOfficer">
+            <div class="client-chip__role">Loan Officer</div>
+            <div class="client-chip__name" id="chipNameLoanOfficer">${escapeHtml(d.loanOfficer || '—')}</div>
           </button>
           <button type="button" class="client-chip ${attr === 'Direct' ? 'is-active' : ''}" data-client-pick="direct">
             <div class="client-chip__role">Direct</div>
@@ -3306,6 +3409,23 @@ function dealModalHTML(deal, prefill = {}) {
         `).join('')}
       </div>
 
+      <!-- V3: Alltech Source Type — shown only for Alltech deals. Bank-Aff
+           chip is disabled unless Transaction Type is Refinance (Q11). -->
+      <div id="alltechSourceSection" ${d.titleCompany === 'Alltech National Title' ? '' : 'hidden'}>
+        <div class="form-section-title">${icon('check', 14)} Alltech Source Type</div>
+        <div class="alltech-source-picker">
+          <label class="alltech-source-chip ${d.alltechSourceType === 'Self-Generated' || !d.alltechSourceType ? 'is-active' : ''}" data-source-chip="Self-Generated">
+            <input type="radio" name="alltechSourceType" value="Self-Generated" ${d.alltechSourceType !== 'Bank-Affiliated Refi' ? 'checked' : ''} />
+            <span>Self-Generated</span>
+          </label>
+          <label class="alltech-source-chip ${d.alltechSourceType === 'Bank-Affiliated Refi' ? 'is-active' : ''}" data-source-chip="Bank-Affiliated Refi" data-refi-only="true">
+            <input type="radio" name="alltechSourceType" value="Bank-Affiliated Refi" ${d.alltechSourceType === 'Bank-Affiliated Refi' ? 'checked' : ''} />
+            <span>Bank-Affiliated Refi</span>
+          </label>
+        </div>
+        <span class="field__hint" id="alltechSourceHint">Bank-Affiliated Refi is only valid on Refinance transactions.</span>
+      </div>
+
       <!-- Section: Money -->
       <div class="form-section-title">${icon('expenses', 14)} Revenue</div>
       <div class="form-grid">
@@ -3322,18 +3442,18 @@ function dealModalHTML(deal, prefill = {}) {
           <label class="field__label">Owner's Policy</label>
           <input class="field__input" type="number" step="0.01" name="ownersPolicy" value="${d.ownersPolicy || ''}" />
         </div>
-        <!-- Revenue snapshot — dynamic. ATOZ deals show File Fee, ATG
-             deals show Commission %, label flips via JS in app.js. -->
+        <!-- Revenue snapshot — dynamic per model. app.js recalc updates the
+             label + hint + value as the user changes title company + type. -->
         <div class="field">
-          <label class="field__label" id="rateLabel">File Fee (Auto)</label>
-          <input class="field__input field__input--calc" id="fileFeePreview" value="${fmtMoney(computeFileFee(d.transactionType || 'Purchase'))}" readonly />
+          <label class="field__label" id="rateLabel">Rate (Auto)</label>
+          <input class="field__input field__input--calc" id="fileFeePreview" value="—" readonly />
           <span class="field__hint" id="rateHint">Set per title company in Data &amp; Backup</span>
         </div>
 
         <div class="field field--full">
           <label class="field__label">Revenue (Auto)</label>
           <input class="field__input field__input--calc" id="revenuePreview" readonly value="${fmtMoney(d.revenue || 0)}" />
-          <span class="field__hint" id="revenueFormulaHint">Settle + Lender + Owner − File Fee</span>
+          <span class="field__hint" id="revenueFormulaHint">—</span>
         </div>
       </div>
 

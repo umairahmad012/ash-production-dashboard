@@ -394,27 +394,54 @@ const App = {
 
     const form = document.getElementById('dealForm');
 
-    // Live preview of the locked-in rate + revenue. Switches between the
-    // two title-company models:
-    //   ATOZ → flat File Fee subtracted from gross
-    //   ATG  → Commission % applied to gross
-    // For existing deals, preserve the stored snapshot when the
-    // (transactionType, titleCompany) pair is unchanged — matches what
-    // saveDeal will lock in. Anything else re-derives from current
-    // Settings so the preview matches the eventual save.
+    // V3: live preview switches across three revenue models based on the
+    // chosen title company. Also handles the Alltech source-type section
+    // visibility + Bank-Aff gating (Refi-only per Q11), and the live
+    // Alltech tier preview (Q13) — projects the deal's rate given the
+    // deal's month-to-date Self-Gen total INCLUDING this deal's edited
+    // gross value.
+    const settings = () => Settings.load();
+    const alltechSection    = document.getElementById('alltechSourceSection');
+    const alltechHint       = document.getElementById('alltechSourceHint');
+    const bankAffChip       = form.querySelector('[data-source-chip="Bank-Affiliated Refi"]');
+    const bankAffRadio      = form.querySelector('input[name="alltechSourceType"][value="Bank-Affiliated Refi"]');
+    const selfGenRadio      = form.querySelector('input[name="alltechSourceType"][value="Self-Generated"]');
+
     const recalc = () => {
       const fd = new FormData(form);
       const tt = fd.get('transactionType');
       const tc = fd.get('titleCompany');
-      const sameKey = deal && deal.transactionType === tt && deal.titleCompany === tc;
-      const hasStoredFee = deal && deal.fileFee !== undefined && deal.fileFee !== null && deal.fileFee !== '';
-      const hasStoredPct = deal && deal.commissionPct !== undefined && deal.commissionPct !== null && deal.commissionPct !== '';
-      const isAtg = tc === 'ATG Title';
-
+      const src = fd.get('alltechSourceType') || 'Self-Generated';
+      const loan = Number(fd.get('loanAmount') || 0);
       const sf = Number(fd.get('settlementFee') || 0);
       const lp = Number(fd.get('lendersPolicy') || 0);
       const op = Number(fd.get('ownersPolicy') || 0);
       const gross = sf + lp + op;
+
+      const isAlltech = tc === 'Alltech National Title';
+      const isBankAff = isAlltech && src === 'Bank-Affiliated Refi';
+      const isSelfGen = isAlltech && !isBankAff;
+
+      // Show/hide the Alltech source section.
+      if (alltechSection) alltechSection.hidden = !isAlltech;
+      // Bank-Aff chip enabled only on Refinance.
+      if (bankAffChip) {
+        const enabled = tt === 'Refinance';
+        bankAffChip.setAttribute('data-disabled', String(!enabled));
+        if (bankAffRadio) bankAffRadio.disabled = !enabled;
+        if (!enabled && bankAffRadio && bankAffRadio.checked && selfGenRadio) {
+          selfGenRadio.checked = true;
+          // update chip active states
+          form.querySelectorAll('[data-source-chip]').forEach(c => {
+            c.classList.toggle('is-active', c.getAttribute('data-source-chip') === 'Self-Generated');
+          });
+        }
+      }
+      if (alltechHint) {
+        alltechHint.textContent = tt === 'Refinance'
+          ? 'Self-Generated goes into the monthly tier. Bank-Affiliated Refi uses the flat loan-amount rate.'
+          : 'Bank-Affiliated Refi is only valid on Refinance transactions.';
+      }
 
       const rateLabel = document.getElementById('rateLabel');
       const rateHint = document.getElementById('rateHint');
@@ -422,51 +449,111 @@ const App = {
       const ratePreview = document.getElementById('fileFeePreview');
       const revPreview = document.getElementById('revenuePreview');
 
-      let rev;
-      if (isAtg) {
-        const pct = (sameKey && hasStoredPct) ? Number(deal.commissionPct) : computeAtgPercentage(tt);
-        rev = Math.round(gross * (pct / 100) * 100) / 100;
-        if (rateLabel) rateLabel.textContent = 'Commission % (Auto)';
-        if (rateHint) rateHint.textContent = 'Set per ATG transaction type in Data & Backup';
-        if (formulaHint) formulaHint.textContent = '(Settle + Lender + Owner) × Commission %';
-        if (ratePreview) ratePreview.value = pct.toFixed(2) + '%';
+      const sameKey = deal &&
+        deal.transactionType === tt &&
+        deal.titleCompany === tc &&
+        (deal.alltechSourceType || null) === (isAlltech ? src : null);
+      const hasFee = deal && deal.fileFee != null && deal.fileFee !== '';
+      const hasPct = deal && deal.commissionPct != null && deal.commissionPct !== '';
+
+      let rev, rateStr, labelText, hintText, formulaText;
+
+      if (tc === 'ATOZ Title') {
+        const rate = (sameKey && hasPct) ? Number(deal.commissionPct) : settings().atozRate;
+        const fee  = (sameKey && hasFee) ? Number(deal.fileFee)       : computeFileFee(tt);
+        rev = Math.round((gross * (rate / 100) - fee) * 100) / 100;
+        labelText   = 'Rate + File Fee (Auto)';
+        hintText    = `${rate}% commission · ${fmtMoney(fee)} file fee`;
+        formulaText = '(Settle + Lender + Owner) × Rate − File Fee';
+        rateStr     = `${rate}% · ${fmtMoney(fee)}`;
+      } else if (isBankAff) {
+        const rate = (sameKey && hasPct) ? Number(deal.commissionPct) : computeAlltechBankRate(loan);
+        rev = Math.round(gross * (rate / 100) * 100) / 100;
+        labelText   = 'Commission Rate (Auto)';
+        hintText    = `Bank-Aff Refi rate for loan ${fmtMoney(loan, {decimals:0})}`;
+        formulaText = '(Settle + Lender + Owner) × Rate';
+        rateStr     = `${rate}%`;
+      } else if (isSelfGen) {
+        // V3 Q13 — project the deal's Alltech tier based on this month's
+        // total Self-Gen gross INCLUDING this deal's live edited gross.
+        // For an existing deal, subtract its stored gross before adding
+        // the current form gross so we don't double-count.
+        const ym = monthKeyOf(fd.get('disbursementDate'));
+        let monthTotal = 0;
+        if (ym) {
+          for (const other of Store.getDeals()) {
+            if (other.id === (deal && deal.id)) continue;
+            if (other.titleCompany !== 'Alltech National Title') continue;
+            if (other.alltechSourceType !== 'Self-Generated') continue;
+            if (monthKeyOf(other.disbursementDate) !== ym) continue;
+            monthTotal += computeGross(other);
+          }
+        }
+        monthTotal += gross;
+        const tier = computeAlltechTier(monthTotal);
+        rev = Math.round(gross * (tier.rate / 100) * 100) / 100;
+        labelText   = 'Monthly Tier (Auto)';
+        hintText    = `Month gross with this deal: ${fmtMoney(monthTotal, {decimals:0})} → ${tier.rate}% tier`;
+        formulaText = '(Settle + Lender + Owner) × Monthly Tier Rate';
+        rateStr     = `${tier.rate}%`;
       } else {
-        const ff = (sameKey && hasStoredFee) ? Number(deal.fileFee) : computeFileFee(tt);
-        rev = Math.round((gross - ff) * 100) / 100;
-        if (rateLabel) rateLabel.textContent = 'File Fee (Auto)';
-        if (rateHint) rateHint.textContent = 'Set per ATOZ transaction type in Data & Backup';
-        if (formulaHint) formulaHint.textContent = 'Settle + Lender + Owner − File Fee';
-        if (ratePreview) ratePreview.value = fmtMoney(ff);
+        // Unassigned / legacy fallback → gross − fileFee
+        const fee = (sameKey && hasFee) ? Number(deal.fileFee) : computeFileFee(tt);
+        rev = Math.round((gross - fee) * 100) / 100;
+        labelText   = 'File Fee (Auto)';
+        hintText    = 'Assign a title company to use the current commission structure';
+        formulaText = 'Settle + Lender + Owner − File Fee';
+        rateStr     = fmtMoney(fee);
       }
-      if (revPreview) revPreview.value = fmtMoney(rev);
+
+      if (rateLabel)   rateLabel.textContent   = labelText;
+      if (rateHint)    rateHint.textContent    = hintText;
+      if (formulaHint) formulaHint.textContent = formulaText;
+      if (ratePreview) ratePreview.value       = rateStr;
+      if (revPreview)  revPreview.value        = fmtMoney(rev);
     };
-    // Re-render preview on any input that affects either the model or
-    // the inputs to the formula. titleCompany is a radio group so use
-    // querySelectorAll + change listeners.
-    ['transactionType', 'settlementFee', 'lendersPolicy', 'ownersPolicy'].forEach(n => {
+    ['transactionType', 'settlementFee', 'lendersPolicy', 'ownersPolicy', 'loanAmount', 'disbursementDate'].forEach(n => {
       form.elements[n]?.addEventListener('input', recalc);
       form.elements[n]?.addEventListener('change', recalc);
     });
-    form.querySelectorAll('input[name="titleCompany"]').forEach(r => {
+    form.querySelectorAll('input[name="titleCompany"], input[name="alltechSourceType"]').forEach(r => {
       r.addEventListener('change', recalc);
+    });
+    // Source-type chip active-state visuals
+    form.querySelectorAll('[data-source-chip]').forEach(chip => {
+      chip.addEventListener('click', () => {
+        if (chip.getAttribute('data-disabled') === 'true') return;
+        form.querySelectorAll('[data-source-chip]').forEach(c => c.classList.remove('is-active'));
+        chip.classList.add('is-active');
+      });
+    });
+    // Force uppercase on the state input.
+    document.getElementById('stateInput')?.addEventListener('input', (e) => {
+      e.target.value = e.target.value.toUpperCase();
     });
     recalc();
 
-    // Keep chip labels in sync with the listing/selling agent inputs
+    // Keep chip labels in sync with the four candidate name inputs.
     const syncChipNames = () => {
       const l = form.elements.listingAgent.value.trim();
       const s = form.elements.sellingAgent.value.trim();
+      const ld = form.elements.lenderName?.value.trim() || '';
+      const lo = form.elements.loanOfficer?.value.trim() || '';
       const chipL = document.getElementById('chipNameListing');
       const chipS = document.getElementById('chipNameSelling');
-      if (chipL) chipL.textContent = l || '—';
-      if (chipS) chipS.textContent = s || '—';
+      const chipLd = document.getElementById('chipNameLender');
+      const chipLo = document.getElementById('chipNameLoanOfficer');
+      if (chipL)  chipL.textContent  = l  || '—';
+      if (chipS)  chipS.textContent  = s  || '—';
+      if (chipLd) chipLd.textContent = ld || '—';
+      if (chipLo) chipLo.textContent = lo || '—';
     };
-    ['listingAgent', 'sellingAgent'].forEach(n => {
+    ['listingAgent', 'sellingAgent', 'lenderName', 'loanOfficer'].forEach(n => {
       form.elements[n]?.addEventListener('input', syncChipNames);
       form.elements[n]?.addEventListener('change', syncChipNames);
     });
 
-    // Client chip picker — tag-style selector
+    // Client chip picker — V3 supports Lender + Loan Officer chips (Q9=C).
     const chips = form.querySelectorAll('[data-client-pick]');
     const attrInput = document.getElementById('clientAttribution');
     const clientInput = document.getElementById('clientInput');
@@ -478,41 +565,44 @@ const App = {
         const which = btn.getAttribute('data-client-pick');
         const listing = form.elements.listingAgent.value.trim();
         const selling = form.elements.sellingAgent.value.trim();
+        const lender  = form.elements.lenderName?.value.trim()  || '';
+        const officer = form.elements.loanOfficer?.value.trim() || '';
         if (which === 'listing') {
           if (!listing) { this.toast('Enter the Listing Agent name first'); return; }
-          clientInput.value = listing;
-          attrInput.value = 'Listing Agent';
+          clientInput.value = listing; attrInput.value = 'Listing Agent';
         } else if (which === 'selling') {
           if (!selling) { this.toast('Enter the Selling Agent name first'); return; }
-          clientInput.value = selling;
-          attrInput.value = 'Selling Agent';
+          clientInput.value = selling; attrInput.value = 'Selling Agent';
         } else if (which === 'both') {
           if (!listing && !selling) { this.toast('Enter an agent name first'); return; }
-          // Prefer listing if both present; use whichever exists otherwise
-          clientInput.value = listing || selling;
-          attrInput.value = 'Both';
+          clientInput.value = listing || selling; attrInput.value = 'Both';
+        } else if (which === 'lender') {
+          if (!lender) { this.toast('Enter the Lender name first'); return; }
+          clientInput.value = lender; attrInput.value = 'Lender';
+        } else if (which === 'loanOfficer') {
+          if (!officer) { this.toast('Enter the Loan Officer name first'); return; }
+          clientInput.value = officer; attrInput.value = 'Loan Officer';
         } else if (which === 'direct') {
-          clientInput.value = '';
-          attrInput.value = 'Direct';
+          clientInput.value = ''; attrInput.value = 'Direct';
         }
         setActive(which);
       });
     });
 
-    // If user types a custom name manually, clear active chip unless it matches one of the agents
+    // Client input mirrors chip state when user types a name matching any candidate.
     clientInput.addEventListener('input', () => {
       const v = clientInput.value.trim();
       const listing = form.elements.listingAgent.value.trim();
       const selling = form.elements.sellingAgent.value.trim();
-      if (!v) {
-        setActive(null);
-        attrInput.value = '';
-        return;
-      }
-      if (v === listing && v === selling) { setActive('both'); attrInput.value = 'Both'; }
-      else if (v === listing) { setActive('listing'); attrInput.value = 'Listing Agent'; }
-      else if (v === selling) { setActive('selling'); attrInput.value = 'Selling Agent'; }
-      else { setActive(null); /* leave attribution as-is so user can override via chip */ }
+      const lender  = form.elements.lenderName?.value.trim()  || '';
+      const officer = form.elements.loanOfficer?.value.trim() || '';
+      if (!v) { setActive(null); attrInput.value = ''; return; }
+      if (v === listing && v === selling) { setActive('both');        attrInput.value = 'Both'; }
+      else if (v === listing)             { setActive('listing');     attrInput.value = 'Listing Agent'; }
+      else if (v === selling)             { setActive('selling');     attrInput.value = 'Selling Agent'; }
+      else if (v === lender)              { setActive('lender');      attrInput.value = 'Lender'; }
+      else if (v === officer)             { setActive('loanOfficer'); attrInput.value = 'Loan Officer'; }
+      else                                { setActive(null); }
     });
 
     form.addEventListener('submit', (e) => {
