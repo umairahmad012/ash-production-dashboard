@@ -243,6 +243,10 @@ const App = {
       this._render('lender', { name: decodeURIComponent(parts[1]) });
       return;
     }
+    if (route === 'loan-officer' && parts[1]) {
+      this._render('loan-officer', { name: decodeURIComponent(parts[1]) });
+      return;
+    }
 
     this._render(route, query);
   },
@@ -287,9 +291,10 @@ const App = {
       const r = a.dataset.route;
       a.classList.toggle('is-active',
         r === route ||
-        (route === 'agent'       && r === 'agents') ||
-        (route === 'underwriter' && r === 'underwriters') ||
-        (route === 'lender'      && r === 'lenders')
+        (route === 'agent'         && r === 'agents') ||
+        (route === 'underwriter'   && r === 'underwriters') ||
+        (route === 'lender'        && r === 'lenders') ||
+        (route === 'loan-officer'  && r === 'loan-officers')
       );
     });
 
@@ -332,6 +337,15 @@ const App = {
       case 'lender':
         html = Views.lenderDetail(params.name);
         postFn = Views.lenderDetailPost;
+        postArg = params.name;
+        break;
+      case 'loan-officers':
+        html = Views.loanOfficers(params);
+        postFn = Views.loanOfficersPost;
+        break;
+      case 'loan-officer':
+        html = Views.loanOfficerDetail(params.name);
+        postFn = Views.loanOfficerDetailPost;
         postArg = params.name;
         break;
       case 'expenses':
@@ -802,7 +816,7 @@ const App = {
     const expense = expenseId ? Store.getExpense(expenseId) : null;
     this.openModal(expenseModalHTML(expense, prefill));
 
-    // Wire ALL comboboxes in the modal — there are two now (Realtor + Lender).
+    // V3: three independent targets — Realtor, Lender, Loan Officer.
     document.querySelectorAll('#expenseForm [data-combobox]').forEach(wireCombobox);
 
     const form = document.getElementById('expenseForm');
@@ -810,10 +824,10 @@ const App = {
       e.preventDefault();
       const obj = Object.fromEntries(new FormData(form).entries());
       obj.amount = Number(obj.amount || 0);
-      // At least one of (Realtor, Lender) must be tagged so the expense
+      // At least one of the three targets must be tagged so the expense
       // surfaces somewhere on a profile page.
-      if (!(obj.client || '').trim() && !(obj.lenderName || '').trim()) {
-        this.toast('Tag this expense to a realtor, a lender, or both');
+      if (!(obj.client || '').trim() && !(obj.lenderName || '').trim() && !(obj.loanOfficer || '').trim()) {
+        this.toast('Tag this expense to a realtor, lender, or loan officer');
         return;
       }
       if (!obj.id) delete obj.id;
@@ -1052,9 +1066,10 @@ function downloadCSV(filename, rows) {
 
 App.openEntityEditModal = function(kind, name) {
   const getMeta = {
-    realtor:     () => Store.getRealtorMeta(name),
-    underwriter: () => Store.getUnderwriterMeta(name),
-    lender:      () => Store.getLenderMeta(name)
+    realtor:        () => Store.getRealtorMeta(name),
+    underwriter:    () => Store.getUnderwriterMeta(name),
+    lender:         () => Store.getLenderMeta(name),
+    'loan-officer': () => Store.getLoanOfficerMeta(name)
   }[kind];
   if (!getMeta) return;
 
@@ -1071,38 +1086,51 @@ App.openEntityEditModal = function(kind, name) {
     let renamed = false;
     if (newName !== name) {
       const helpers = {
-        realtor:     () => Store.renameAgent(name, newName),
-        underwriter: () => Store.renameUnderwriter(name, newName),
-        lender:      () => Store.renameLender(name, newName)
+        realtor:        () => Store.renameAgent(name, newName),
+        underwriter:    () => Store.renameUnderwriter(name, newName),
+        lender:         () => Store.renameLender(name, newName),
+        'loan-officer': () => Store.renameLoanOfficer(name, newName)
       };
       const touched = helpers[kind]();
       renamed = touched > 0 || newName !== name;
     }
 
-    // 2) Save sidecar metadata under the (possibly new) name. Empty notes
-    //    and blank budgets are persisted as cleared values.
+    // 2) Save sidecar metadata under the (possibly new) name.
     const patch = {
-      notes: (obj.notes || '').trim()
+      notes:        (obj.notes || '').trim(),
+      phone:        (obj.phone || '').trim(),
+      email:        (obj.email || '').trim(),
+      brokerage:    (obj.brokerage || '').trim(),
+      leadSource:   (obj.leadSource || '').trim(),
+      referredBy:   (obj.referredBy || '').trim(),
+      // State licenses come in as a comma list; store as an array.
+      stateLicenses: String(obj.stateLicenses || '')
+        .split(',').map(s => s.trim().toUpperCase()).filter(Boolean)
     };
-    if (kind === 'realtor' || kind === 'lender') {
+    if (kind === 'realtor' || kind === 'lender' || kind === 'loan-officer') {
       const bt = obj.budgetTarget != null && String(obj.budgetTarget).trim() !== ''
         ? Number(obj.budgetTarget)
         : null;
       patch.budgetTarget = (bt !== null && Number.isFinite(bt) && bt >= 0) ? bt : null;
     }
     const setters = {
-      realtor:     (n, p) => Store.setRealtorMeta(n, p),
-      underwriter: (n, p) => Store.setUnderwriterMeta(n, p),
-      lender:      (n, p) => Store.setLenderMeta(n, p)
+      realtor:        (n, p) => Store.setRealtorMeta(n, p),
+      underwriter:    (n, p) => Store.setUnderwriterMeta(n, p),
+      lender:         (n, p) => Store.setLenderMeta(n, p),
+      'loan-officer': (n, p) => Store.setLoanOfficerMeta(n, p)
     };
     setters[kind](newName, patch);
 
     this.toast(renamed ? 'Renamed and saved' : 'Saved');
     this.closeModal();
 
-    // If we renamed and we were viewing this entity's detail page, route
-    // to the new URL so the page reflects the new name.
-    const detailRoutes = { realtor: 'agent', underwriter: 'underwriter', lender: 'lender' };
+    // Route back to the (possibly renamed) detail page.
+    const detailRoutes = {
+      realtor:        'agent',
+      underwriter:    'underwriter',
+      lender:         'lender',
+      'loan-officer': 'loan-officer'
+    };
     if (renamed && this.currentRoute === detailRoutes[kind]) {
       location.hash = `#/${detailRoutes[kind]}/${encodeURIComponent(newName)}`;
     } else {

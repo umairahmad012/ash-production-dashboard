@@ -22,6 +22,9 @@ const ICONS = {
   // pediment. Same visual weight as the underwriters shield so they read
   // as a sibling section in the sidebar.
   lenders: '<path d="M3 21h18"/><path d="M5 21V10M9 21V10M15 21V10M19 21V10"/><path d="M2 10h20L12 3 2 10Z"/><path d="M12 14v3M11 15h2"/>',
+  // V3: Loan Officers icon — person + a small dollar mark to differentiate
+  // from Realtors. Kept simple to match the sidebar aesthetic.
+  'loan-officers': '<circle cx="12" cy="8" r="3.5"/><path d="M5 21a5 5 0 0 1 5-5h4a5 5 0 0 1 5 5"/><path d="M18 5v3M17 6h2"/>',
   data: '<ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v6c0 1.66 4 3 9 3s9-1.34 9-3V5"/><path d="M3 11v6c0 1.66 4 3 9 3s9-1.34 9-3v-6"/>',
   // Expense categories
   marketing: '<path d="M3 11v2a1 1 0 0 0 1 1h3l6 4V6L7 10H4a1 1 0 0 0-1 1Z"/><path d="M17 8a5 5 0 0 1 0 8M20 5a9 9 0 0 1 0 14"/>',
@@ -1897,6 +1900,335 @@ Views.lenderDetailPost = function(name) {
 };
 
 /* ========================================================================
+   V3: Loan Officers database (list + detail)
+
+   Parallel to Lenders — the loan officer IS the client per Ash's framing,
+   so LOs get their own database with contact card, deals list, expenses
+   tagged to them, budget-vs-spent, ROI. Same field set as the lender
+   database (Q6=A uniform fields).
+   ======================================================================== */
+
+Views.loanOfficers = function(query = {}) {
+  const years = Store.getYearsInData();
+  const yearF = query.year || '';
+  const officers = yearF
+    ? Store.getLoanOfficersForYear(Number(yearF))
+    : Store.getLoanOfficers();
+  const search = (query.q || '').toLowerCase();
+
+  let filtered = officers.filter(l => !search || l.name.toLowerCase().includes(search));
+
+  const sortField = query.sort || 'revenue';
+  const sortDir   = query.dir  || (query.sort ? 'asc' : 'desc');
+  const LO_SORT_GETTERS = {
+    name:           l => l.name || '',
+    dealCount:      l => Number(l.dealCount || 0),
+    loanAmount:     l => Number(l.loanAmount || 0),
+    purchaseVolume: l => Number(l.purchaseVolume || 0),
+    revenue:        l => Number(l.revenue || 0),
+    expenses:       l => Number(l.expenses || 0),
+    roi:            l => Number(l.roi || 0),
+    costPerDeal:    l => Number(l.costPerDeal || 0),
+    firstDeal:      l => l.firstDeal || '',
+    lastDeal:       l => l.lastDeal || ''
+  };
+  const getter = LO_SORT_GETTERS[sortField] || LO_SORT_GETTERS.revenue;
+  filtered = sortItems(filtered, getter, sortDir);
+
+  const totalRevenue = officers.reduce((s, l) => s + l.revenue, 0);
+  const totalDeals = officers.reduce((s, l) => s + l.dealCount, 0);
+  const totalSpent = officers.reduce((s, l) => s + l.expenses, 0);
+
+  return `
+    <section class="view">
+      <header class="view-header">
+        <div class="view-header__left">
+          <div class="eyebrow">Loan Officers</div>
+          <h1>Individual <em>relationships</em>.</h1>
+        </div>
+        <div class="view-header__right">
+          <span class="muted" style="font-size: 12px; letter-spacing: 1px; margin-right: 12px;">${officers.length} loan officer${officers.length === 1 ? '' : 's'} · ${totalDeals} total deals${yearF ? ` in ${yearF}` : ''}</span>
+          <button class="btn btn--ghost" data-action="export-all-loan-officers">${icon('download', 14)} Export All CSV</button>
+        </div>
+      </header>
+
+      <div class="panel">
+        <div class="panel__body panel__body--summary">
+          <div class="summary-hero" data-animate="hero">
+            <div class="summary-hero__label">Total Revenue via Loan Officers</div>
+            <div class="summary-hero__value" data-countup="${totalRevenue.toFixed(0)}">${fmtMoney(totalRevenue, { decimals: 0 })}</div>
+            <div class="summary-hero__meta">
+              <span class="summary-hero__metaItem"><span class="summary-hero__metaValue">${totalDeals}</span> deals</span>
+              <span class="summary-hero__metaDot"></span>
+              <span class="summary-hero__metaItem">Across <span class="summary-hero__metaValue">${officers.length}</span> officers</span>
+              <span class="summary-hero__metaDot"></span>
+              <span class="summary-hero__metaItem"><span class="summary-hero__metaValue">${fmtMoney(totalSpent, { decimals: 0 })}</span> invested in relationships</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="filters">
+          <div class="filters__search">
+            <input type="search" id="loSearch" value="${escapeHtml(query.q || '')}" placeholder="Search by loan officer name" />
+          </div>
+          <select id="filterLoYear">
+            <option value="">All time</option>
+            ${years.map(y => `<option value="${y}" ${String(y) === yearF ? 'selected' : ''}>${y}</option>`).join('')}
+          </select>
+          <div class="filters__hint muted" style="font-size: 11px; letter-spacing: 1px; text-transform: uppercase; padding: 0 6px;">Click a row for detail · Edit to update contact info or set a budget</div>
+        </div>
+
+        <div class="table-wrap">
+          <table class="data">
+            <thead><tr>
+              ${sortableTH('name',           'Loan Officer',    query)}
+              ${sortableTH('dealCount',      'Deals',           query, 'num')}
+              ${sortableTH('loanAmount',     'Loan Volume',     query, 'num')}
+              ${sortableTH('purchaseVolume', 'Purchase Volume', query, 'num')}
+              ${sortableTH('revenue',        'Revenue',         query, 'num')}
+              ${sortableTH('expenses',       'Spent',           query, 'num')}
+              ${sortableTH('roi',            'ROI',             query, 'num')}
+              ${sortableTH('costPerDeal',    'Cost / Deal',     query, 'num')}
+              ${sortableTH('firstDeal',      'First Deal',      query)}
+              ${sortableTH('lastDeal',       'Last Deal',       query)}
+              <th class="cell-actions">Actions</th>
+            </tr></thead>
+            <tbody>
+              ${filtered.length === 0 ? `<tr><td colspan="11" class="center muted" style="padding: 64px 20px;">No loan officers yet. Add a loan officer to any deal to start tracking.</td></tr>` : filtered.map(l => `
+                <tr class="is-clickable" data-loan-officer="${escapeHtml(l.name)}">
+                  <td class="cell-strong">${escapeHtml(l.name)}</td>
+                  <td class="num cell-strong">${fmtNumber(l.dealCount)}</td>
+                  <td class="num">${l.loanAmount ? fmtMoney(l.loanAmount, { decimals: 0 }) : '—'}</td>
+                  <td class="num">${l.purchaseVolume ? fmtMoney(l.purchaseVolume, { decimals: 0 }) : '—'}</td>
+                  <td class="num cell-strong">${fmtMoney(l.revenue, { decimals: 0 })}</td>
+                  <td class="num">${l.expenses ? fmtMoney(l.expenses, { decimals: 0 }) : '—'}</td>
+                  <td class="num">${fmtRoi(l.roi)}</td>
+                  <td class="num muted">${l.costPerDeal ? fmtMoney(l.costPerDeal, { decimals: 0 }) : '—'}</td>
+                  <td class="muted">${fmtDate(l.firstDeal)}</td>
+                  <td class="muted">${fmtDate(l.lastDeal)}</td>
+                  <td class="cell-actions"><button class="icon-btn" data-edit-loan-officer="${escapeHtml(l.name)}" title="Edit contact / budget">Edit</button></td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  `;
+};
+
+Views.loanOfficersPost = function() {
+  Animate.heroIn('[data-animate="hero"]');
+  Animate.countUp('.summary-hero__value[data-countup]', { duration: 1.2 });
+
+  const apply = () => App.navigate('loan-officers', {
+    q: document.getElementById('loSearch')?.value?.trim() || '',
+    year: document.getElementById('filterLoYear')?.value || '',
+    sort: App.currentParams?.sort || '',
+    dir:  App.currentParams?.dir  || ''
+  });
+  document.getElementById('loSearch')?.addEventListener('input', debounce(apply, 250));
+  document.getElementById('filterLoYear')?.addEventListener('change', apply);
+
+  wireSortableHeaders('loan-officers', {
+    q: document.getElementById('loSearch')?.value?.trim() || '',
+    year: document.getElementById('filterLoYear')?.value || '',
+    sort: App.currentParams?.sort,
+    dir:  App.currentParams?.dir
+  });
+
+  document.querySelector('[data-action="export-all-loan-officers"]')?.addEventListener('click', () => {
+    const officers = Store.getLoanOfficers();
+    if (!officers.length) return App.toast('No loan officers to export');
+    const rows = [
+      ['Loan Officer', 'Deals', 'Loan Volume', 'Purchase Volume', 'Revenue', 'Spent', 'ROI', 'Cost / Deal', 'Budget Target', 'First Deal', 'Last Deal', 'Phone', 'Email', 'Brokerage', 'State Licenses', 'Lead Source', 'Referred By', 'Notes'],
+      ...officers.map(l => [
+        l.name, l.dealCount, l.loanAmount, l.purchaseVolume,
+        l.revenue, l.expenses, l.roi, l.costPerDeal,
+        l.budgetTarget != null ? l.budgetTarget : '',
+        l.firstDeal || '', l.lastDeal || '',
+        l.phone, l.email, l.brokerage,
+        Array.isArray(l.stateLicenses) ? l.stateLicenses.join(', ') : '',
+        l.leadSource, l.referredBy, l.notes
+      ])
+    ];
+    downloadCSV(`loan-officers-all-${new Date().toISOString().slice(0,10)}.csv`, rows);
+    App.toast(`${officers.length} loan officer${officers.length === 1 ? '' : 's'} exported`);
+  });
+
+  document.querySelectorAll('tr[data-loan-officer]').forEach(row => {
+    row.addEventListener('click', (e) => {
+      if (e.target.closest('a, button')) return;
+      location.hash = '#/loan-officer/' + encodeURIComponent(row.getAttribute('data-loan-officer'));
+    });
+  });
+  document.querySelectorAll('[data-edit-loan-officer]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      App.openEntityEditModal('loan-officer', btn.getAttribute('data-edit-loan-officer'));
+    });
+  });
+};
+
+Views.loanOfficerDetail = function(name) {
+  const l = Store.getLoanOfficer(name);
+  if (!l) {
+    return `
+      <section class="view">
+        <header class="view-header">
+          <div class="view-header__left">
+            <a href="#/loan-officers" class="breadcrumb">← All Loan Officers</a>
+            <h1>Loan officer not found.</h1>
+          </div>
+        </header>
+      </section>
+    `;
+  }
+
+  const deals = Store.getDealsForLoanOfficer(name)
+    .slice()
+    .sort((a, b) => (b.disbursementDate || '').localeCompare(a.disbursementDate || ''));
+  const expenses = Store.getExpensesForLoanOfficer(name)
+    .slice()
+    .sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+
+  const budgetBar = (l.budgetTarget && l.budgetTarget > 0) ? `
+    <div class="panel">
+      <div class="panel__head">
+        <div>
+          <h3 class="panel__title">${icon('expenses', 16)} Budget</h3>
+          <div class="panel__subtitle">${fmtMoney(l.expenses, { decimals: 0 })} spent of ${fmtMoney(l.budgetTarget, { decimals: 0 })} target</div>
+        </div>
+        <div class="muted" style="font-size:12px;">${l.budgetPct}% used</div>
+      </div>
+      <div class="panel__body" style="padding: 8px 24px 24px;">
+        <div class="progress-track">
+          <div class="progress-bar ${l.budgetPct > 100 ? 'progress-bar--over' : ''}" data-target-width="${Math.min(100, l.budgetPct)}" style="width:0%;"></div>
+        </div>
+      </div>
+    </div>
+  ` : '';
+
+  return `
+    <section class="view">
+      <header class="view-header">
+        <div class="view-header__left">
+          <a href="#/loan-officers" class="breadcrumb">← All Loan Officers</a>
+          <div class="eyebrow">Loan Officer</div>
+          <h1>${escapeHtml(l.name)}</h1>
+          ${entityContactStripHTML(l)}
+          ${l.notes ? `<div class="muted" style="margin-top:10px;max-width:60ch;">${escapeHtml(l.notes)}</div>` : ''}
+        </div>
+        <div class="view-header__right">
+          <button class="btn btn--ghost" data-action="edit-loan-officer">${icon('settings', 14)} Edit</button>
+        </div>
+      </header>
+
+      <div class="stat-cards">
+        <div class="stat-card stat-card--featured" data-animate="card">
+          <div class="stat-card__label">Total Revenue</div>
+          <div class="stat-card__value" data-countup="${l.revenue.toFixed(0)}">${fmtMoney(l.revenue, { decimals: 0 })}</div>
+          <div class="stat-card__meta">Avg ${fmtMoney(l.avgRevenue, { decimals: 0 })} / deal</div>
+        </div>
+        <div class="stat-card" data-animate="card">
+          <div class="stat-card__label">Total Loan Volume</div>
+          <div class="stat-card__value" data-countup="${l.loanAmount.toFixed(0)}">${fmtMoney(l.loanAmount, { decimals: 0 })}</div>
+          <div class="stat-card__meta">Avg ${fmtMoney(l.avgLoan, { decimals: 0 })} / deal</div>
+        </div>
+        <div class="stat-card" data-animate="card">
+          <div class="stat-card__label">Total Deals</div>
+          <div class="stat-card__value" data-countup="${l.dealCount}">${fmtNumber(l.dealCount)}</div>
+          <div class="stat-card__meta">${l.purchase} Purchase · ${l.refinance} Refi · ${l.subordinate} Sub · ${l.commercial} Comm</div>
+        </div>
+        <div class="stat-card" data-animate="card">
+          <div class="stat-card__label">Spent on Relationship</div>
+          <div class="stat-card__value" data-countup="${l.expenses.toFixed(0)}">${fmtMoney(l.expenses, { decimals: 0 })}</div>
+          <div class="stat-card__meta">${fmtRoi(l.roi)} ROI · ${fmtMoney(l.costPerDeal, { decimals: 0 })} / deal</div>
+        </div>
+      </div>
+
+      ${budgetBar}
+
+      <div class="panel">
+        <div class="panel__head">
+          <div>
+            <h3 class="panel__title">${icon('deals', 16)} Deals Sourced</h3>
+            <div class="panel__subtitle">${deals.length} deal${deals.length === 1 ? '' : 's'} where ${escapeHtml(l.name)} was the loan officer</div>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="data">
+            <thead><tr>
+              <th>Order #</th>
+              <th>Title Co.</th>
+              <th>Disbursement</th>
+              <th>Type</th>
+              <th>Lender</th>
+              <th>Property</th>
+              <th class="num">Loan Amt</th>
+              <th class="num">Revenue</th>
+            </tr></thead>
+            <tbody>
+              ${deals.length === 0 ? '<tr><td colspan="8" class="center muted" style="padding: 48px 20px;">No deals on file for this loan officer.</td></tr>' : deals.map(d => `
+                <tr>
+                  <td class="cell-strong">${escapeHtml(d.orderNumber || '—')}</td>
+                  <td>${titleCompanyTag(d.titleCompany)}</td>
+                  <td class="muted">${fmtDate(d.disbursementDate)}</td>
+                  <td>${dealTypeTag(d.transactionType)}</td>
+                  <td class="muted">${escapeHtml(d.lenderName || '—')}</td>
+                  <td class="muted">${escapeHtml(d.propertyAddress || '—')}</td>
+                  <td class="num">${d.loanAmount ? fmtMoney(d.loanAmount, { decimals: 0 }) : '—'}</td>
+                  <td class="num cell-strong">${fmtMoney(d.revenue, { decimals: 0 })}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel__head">
+          <div>
+            <h3 class="panel__title">${icon('expenses', 16)} Relationship Investments</h3>
+            <div class="panel__subtitle">${expenses.length} expense${expenses.length === 1 ? '' : 's'} tagged to ${escapeHtml(l.name)}</div>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="data">
+            <thead><tr>
+              <th>Date</th>
+              <th>Category</th>
+              <th>Description</th>
+              <th class="num">Amount</th>
+            </tr></thead>
+            <tbody>
+              ${expenses.length === 0 ? '<tr><td colspan="4" class="center muted" style="padding: 48px 20px;">No relationship investments tagged to this loan officer yet.</td></tr>' : expenses.map(e => `
+                <tr>
+                  <td class="muted">${fmtDate(e.date)}</td>
+                  <td>${escapeHtml(e.expenseType || '—')}</td>
+                  <td>${escapeHtml(e.description || '—')}</td>
+                  <td class="num cell-strong">${fmtMoney(e.amount, { decimals: 0 })}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  `;
+};
+
+Views.loanOfficerDetailPost = function(name) {
+  Animate.staggerIn('[data-animate="card"]', { stagger: 0.06 });
+  Animate.countUp('.stat-card__value[data-countup]', { duration: 0.9 });
+  Animate.growBars('.progress-bar[data-target-width]', { stagger: 0.04 });
+
+  document.querySelector('[data-action="edit-loan-officer"]')?.addEventListener('click', () => {
+    App.openEntityEditModal('loan-officer', name);
+  });
+};
+
+/* ========================================================================
    Agent detail
    ======================================================================== */
 
@@ -3528,7 +3860,20 @@ function expenseModalHTML(expense, prefill = {}) {
               ${Store.getLenders().map(l => `<button type="button" class="combobox__option" data-value="${escapeHtml(l.name)}">${escapeHtml(l.name)}</button>`).join('') || '<div class="combobox__empty">No lenders yet — type to create one.</div>'}
             </div>
           </div>
-          <div class="field__hint">Optional. Tag this expense to a lender so it shows on their profile and ROI. You can fill realtor, lender, or both.</div>
+          <div class="field__hint">Optional. Institution level.</div>
+        </div>
+
+        <!-- V3: Loan Officer combobox — third independent target. -->
+        <div class="field field--full">
+          <label class="field__label">Loan Officer</label>
+          <div class="combobox" data-combobox>
+            <input class="field__input combobox__input" type="text" name="loanOfficer" autocomplete="off" value="${escapeHtml(e.loanOfficer || '')}" placeholder="Tag this expense to a loan officer" />
+            <button type="button" class="combobox__toggle" aria-label="Open dropdown">▾</button>
+            <div class="combobox__panel" hidden>
+              ${Store.getLoanOfficers().map(l => `<button type="button" class="combobox__option" data-value="${escapeHtml(l.name)}">${escapeHtml(l.name)}</button>`).join('') || '<div class="combobox__empty">No loan officers yet — type to create one.</div>'}
+            </div>
+          </div>
+          <div class="field__hint">Optional. Tag to the actual individual you're building the relationship with. Fill any combination of realtor / lender / loan officer.</div>
         </div>
 
         <div class="field field--full">
@@ -3574,18 +3919,19 @@ function expenseModalHTML(expense, prefill = {}) {
 
 function entityEditModalHTML(kind, name, meta = {}) {
   const KIND_LABELS = {
-    realtor:     { title: 'Edit Realtor',     entity: 'realtor',     budget: true,  contact: true,  noun: 'realtor',     orgLabel: 'Brokerage' },
-    underwriter: { title: 'Edit Underwriter', entity: 'underwriter', budget: false, contact: false, noun: 'underwriter', orgLabel: '' },
-    lender:      { title: 'Edit Lender',      entity: 'lender',      budget: true,  contact: true,  noun: 'lender',      orgLabel: 'Institution' }
+    realtor:        { title: 'Edit Realtor',        entity: 'realtor',        budget: true,  contact: true,  noun: 'realtor',        orgLabel: 'Brokerage' },
+    underwriter:    { title: 'Edit Underwriter',    entity: 'underwriter',    budget: false, contact: false, noun: 'underwriter',    orgLabel: '' },
+    lender:         { title: 'Edit Lender',         entity: 'lender',         budget: true,  contact: true,  noun: 'lender',         orgLabel: 'Institution' },
+    'loan-officer': { title: 'Edit Loan Officer',   entity: 'loan officer',   budget: true,  contact: true,  noun: 'loan officer',   orgLabel: 'Institution' }
   };
   const k = KIND_LABELS[kind] || KIND_LABELS.realtor;
-  // State licenses are stored as an array; render as a comma list for editing.
   const licenses = Array.isArray(meta.stateLicenses) ? meta.stateLicenses.join(', ') : '';
-  // Referred-By autocomplete pulls from BOTH realtors AND lenders so the
-  // user can pick anyone in the database who made the referral.
+  // Referred-By autocomplete pulls from realtors, lenders, AND loan
+  // officers so the user can pick anyone in the database.
   const refByOptions = [
     ...Store.getAgents().map(a => a.name),
-    ...Store.getLenders().map(l => l.name)
+    ...Store.getLenders().map(l => l.name),
+    ...Store.getLoanOfficers().map(l => l.name)
   ].filter(Boolean);
   const refByOptionsUnique = [...new Set(refByOptions)].sort();
 
