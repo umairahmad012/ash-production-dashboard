@@ -850,25 +850,29 @@ Views.dealsPost = function() {
     const deals = Store.getDeals();
     if (!deals.length) return App.toast('No deals to export');
     const rows = [
-      ['Order #', 'Title Company',
+      ['Order #', 'Title Company', 'Alltech Source Type',
        'Listing Agent', 'Selling Agent', 'Client', 'Client Attribution',
-       'Property Address', 'Disbursement Date', 'Transaction Type',
-       'Settlement Fee', "Lender's Policy", "Owner's Policy", 'File Fee', 'Revenue',
+       'Property Address', 'State',
+       'Disbursement Date', 'Transaction Type',
+       'Settlement Fee', "Lender's Policy", "Owner's Policy",
+       'File Fee', 'Commission %', 'Revenue',
        'Month', 'Year', 'Underwriter',
-       'Lender Name', 'Purchase Price', 'Loan Amount'],
+       'Lender Name', 'Loan Officer', 'Purchase Price', 'Loan Amount'],
       ...deals.map(d => {
         const dt = d.disbursementDate ? new Date(d.disbursementDate) : null;
         const month = dt && !isNaN(dt) ? dt.toLocaleString('en-US', { month: 'short' }) : '';
         const year  = dt && !isNaN(dt) ? dt.getFullYear() : '';
         return [
-          d.orderNumber || '', d.titleCompany || '',
+          d.orderNumber || '', d.titleCompany || '', d.alltechSourceType || '',
           d.listingAgent || '', d.sellingAgent || '',
           d.client || '', d.clientAttribution || computeClientSource(d),
-          d.propertyAddress || '', d.disbursementDate || '', d.transactionType || '',
+          d.propertyAddress || '', d.state || '',
+          d.disbursementDate || '', d.transactionType || '',
           d.settlementFee || 0, d.lendersPolicy || 0, d.ownersPolicy || 0,
-          d.fileFee || 0, d.revenue || 0,
+          d.fileFee || 0, d.commissionPct != null ? d.commissionPct : '', d.revenue || 0,
           month, year, d.underwriter || '',
-          d.lenderName || '', d.purchasePrice || 0, d.loanAmount || 0
+          d.lenderName || '', d.loanOfficer || '',
+          d.purchasePrice || 0, d.loanAmount || 0
         ];
       })
     ];
@@ -960,21 +964,29 @@ Views.dealsPost = function() {
         }
       },
       {
+        label: 'Set Alltech Source',
+        icon: 'check',
+        onClick: (ids) => {
+          App.openBulkTagAlltechSourceModal(ids);
+        }
+      },
+      {
         label: 'Export CSV',
         icon: 'download',
         onClick: (ids) => {
           const deals = ids.map(id => Store.getDeal(id)).filter(Boolean);
           const rows = [
-            ['Order #', 'Title Company', 'Disbursement', 'Property Address', 'Client', 'Listing Agent', 'Selling Agent', 'Source', 'Type', 'Settlement Fee', 'Lender Policy', 'Owner Policy', 'File Fee', 'Revenue', 'Lender Name', 'Purchase Price', 'Loan Amount'],
+            ['Order #', 'Title Company', 'Alltech Source Type', 'Disbursement', 'Property Address', 'State', 'Client', 'Listing Agent', 'Selling Agent', 'Source', 'Type', 'Settlement Fee', 'Lender Policy', 'Owner Policy', 'File Fee', 'Commission %', 'Revenue', 'Lender Name', 'Loan Officer', 'Purchase Price', 'Loan Amount'],
             ...deals.map(d => [
-              d.orderNumber || '', d.titleCompany || '',
-              d.disbursementDate || '', d.propertyAddress || '',
+              d.orderNumber || '', d.titleCompany || '', d.alltechSourceType || '',
+              d.disbursementDate || '', d.propertyAddress || '', d.state || '',
               d.client || '', d.listingAgent || '', d.sellingAgent || '',
               d.clientAttribution || computeClientSource(d),
               d.transactionType || '',
               d.settlementFee || 0, d.lendersPolicy || 0, d.ownersPolicy || 0,
-              d.fileFee || 0, d.revenue || 0,
-              d.lenderName || '', d.purchasePrice || 0, d.loanAmount || 0
+              d.fileFee || 0, d.commissionPct != null ? d.commissionPct : '', d.revenue || 0,
+              d.lenderName || '', d.loanOfficer || '',
+              d.purchasePrice || 0, d.loanAmount || 0
             ])
           ];
           downloadCSV(`deals-export-${new Date().toISOString().slice(0,10)}.csv`, rows);
@@ -2953,6 +2965,11 @@ Views.data = function() {
             </div>
             <hr class="divider" />
             <p style="font-size: 13px; color: var(--mid-grey); margin: 0 0 16px;">
+              Scan every deal's Property Address for a two-letter US state code and fill the State field where blank. Existing State values are not overwritten. Useful after a bulk import that didn't include a State column.
+            </p>
+            <button class="btn btn--ghost" id="backfillStatesBtn">${icon('check', 14)} Backfill State from Address</button>
+            <hr class="divider" />
+            <p style="font-size: 13px; color: var(--mid-grey); margin: 0 0 16px;">
               Reset the database back to the original Excel import (160 deals from the 2026 Production Sheet). Your current data will be discarded.
             </p>
             <button class="btn btn--danger" id="resetBtn">Reset to Original Data</button>
@@ -3287,6 +3304,13 @@ Views.dataPost = function() {
       }
     };
     reader.readAsText(file);
+  });
+
+  document.getElementById('backfillStatesBtn')?.addEventListener('click', () => {
+    const n = Store.backfillStates();
+    if (n === 0) App.toast('No deals were missing a State value');
+    else App.toast(`Backfilled State on ${n} deal${n === 1 ? '' : 's'}`);
+    App.render();
   });
 
   document.getElementById('resetBtn')?.addEventListener('click', () => {
@@ -4034,6 +4058,36 @@ function bulkTagTitleCompanyModalHTML(count) {
         <div class="modal__actions-right">
           <button type="button" class="btn btn--ghost" data-close-modal>Cancel</button>
           <button type="submit" class="btn btn--gold">Apply Tag</button>
+        </div>
+      </div>
+    </form>
+  `;
+}
+
+// V3-D: Bulk-set Alltech source type on selected deals. Non-Alltech deals
+// are silently skipped; Bank-Aff Refi is only valid on Refinance deals, so
+// Purchase/Sub/Commercial deals are also silently skipped for that value.
+function bulkTagAlltechSourceModalHTML(count) {
+  return `
+    <div class="modal__head">
+      <div class="modal__subtitle">Bulk action</div>
+      <h2 class="modal__title">Set Alltech Source on ${count} deal${count === 1 ? '' : 's'}</h2>
+    </div>
+    <form id="bulkAlltechSourceForm">
+      <p class="muted" style="margin: 0 0 16px;">Applies only to Alltech-tagged deals. ATOZ deals in the selection are skipped. Bank-Affiliated Refi is applied only to Refinance transactions; other transaction types are skipped for that value.</p>
+      <div class="alltech-source-picker">
+        ${ALLTECH_SOURCE_TYPES.map(src => `
+          <label class="alltech-source-chip">
+            <input type="radio" name="alltechSourceType" value="${src}" required />
+            <span>${src}</span>
+          </label>
+        `).join('')}
+      </div>
+      <div class="modal__actions">
+        <div></div>
+        <div class="modal__actions-right">
+          <button type="button" class="btn btn--ghost" data-close-modal>Cancel</button>
+          <button type="submit" class="btn btn--gold">Apply Source</button>
         </div>
       </div>
     </form>

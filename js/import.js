@@ -30,6 +30,7 @@ const Import = {
     { key: 'loanOfficer',         label: 'Loan Officer',          hint: 'Person you worked with at the lender' },
     { key: 'loanAmount',          label: 'Loan Amount',           hint: 'Dollars' },
     { key: 'purchasePrice',       label: 'Purchase Price',        hint: 'Property sale price (dollars)' },
+    { key: 'state',               label: 'State',                 hint: 'Two-letter US state code (VA / MD / DC)' },
   ],
 
   /* Common header patterns → canonical field. Lowercased, punctuation removed. */
@@ -54,7 +55,8 @@ const Import = {
     lenderName: [/^lender(\s*name)?$/, /^bank$/, /lender\s*(institution|company)/],
     loanOfficer: [/^loan\s*officer$/, /^loan\s*officer\s*name$/, /^lo\s*name$/, /^banker$/, /^lender\s*contact$/],
     loanAmount: [/^loan\s*(amount|amt)$/, /^loan$/, /mortgage\s*amount/, /financing\s*amount/],
-    purchasePrice: [/^purchase\s*(price|amount|amt)$/, /^sales?\s*price$/, /^property\s*price$/, /^sale\s*price$/, /^contract\s*price$/]
+    purchasePrice: [/^purchase\s*(price|amount|amt)$/, /^sales?\s*price$/, /^property\s*price$/, /^sale\s*price$/, /^contract\s*price$/],
+    state: [/^state$/, /^property\s*state$/, /^st$/]
   },
 
   /* Runtime state (carried across wizard steps). */
@@ -161,6 +163,10 @@ const Import = {
         obj[field] = this.normalizeType(raw);
       } else if (field === 'clientAttribution') {
         obj[field] = this.normalizeAttribution(raw);
+      } else if (field === 'state') {
+        // Two-letter uppercase (VA/MD/DC). Trim + upper; if the CSV holds
+        // a full name we leave it to saveDeal's parser to canonicalize.
+        obj[field] = String(raw).trim().toUpperCase().slice(0, 2);
       } else {
         obj[field] = String(raw).trim();
       }

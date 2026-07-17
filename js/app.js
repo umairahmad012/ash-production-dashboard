@@ -1160,6 +1160,30 @@ App.openBulkTagTitleCompanyModal = function(ids) {
 };
 
 /* ==========================================================================
+   V3-D: Bulk Alltech source-type modal — applied to a set of deal ids
+   selected on the Deals page. Non-Alltech deals + non-Refi deals (for
+   Bank-Aff Refi) are silently skipped inside Store.tagAlltechSourceType.
+   ========================================================================== */
+
+App.openBulkTagAlltechSourceModal = function(ids) {
+  if (!Array.isArray(ids) || ids.length === 0) return;
+  this.openModal(bulkTagAlltechSourceModalHTML(ids.length));
+  const form = document.getElementById('bulkAlltechSourceForm');
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const src = (new FormData(form)).get('alltechSourceType');
+    if (!src) { this.toast('Pick a source type'); return; }
+    const n = Store.tagAlltechSourceType(ids, src);
+    const skipped = ids.length - n;
+    let msg = `Tagged ${n} deal${n === 1 ? '' : 's'} as ${src}`;
+    if (skipped) msg += ` (${skipped} skipped)`;
+    this.toast(msg);
+    this.closeModal();
+    this.render();
+  });
+};
+
+/* ==========================================================================
    Admin modal — list/add/remove users, assign roles
    ========================================================================== */
 
